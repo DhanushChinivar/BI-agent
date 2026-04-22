@@ -1,0 +1,22 @@
+# Local dev stack. Used from Phase 2 onward when you need Postgres + Redis locally.
+# Run from repo root:  docker compose -f infra/docker/docker-compose.yml up
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: biagent
+      POSTGRES_PASSWORD: biagent
+      POSTGRES_DB: biagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  pgdata:
