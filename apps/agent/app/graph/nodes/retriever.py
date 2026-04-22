@@ -1,11 +1,48 @@
-"""Retriever node: calls connectors to fetch data."""
+"""Retriever node: calls connectors to fetch data based on the plan."""
+import logging
+
+from app.connectors import REGISTRY
 from app.graph.state import AgentState
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_CONNECTOR = "mock"
+
+
+def _parse_plan_meta(plan: list[str]) -> tuple[list[str], str]:
+    """Extract connector names and question_type encoded by the planner."""
+    connectors: list[str] = []
+    question_type = "other"
+
+    for entry in plan:
+        if entry.startswith("connectors:"):
+            names = entry.removeprefix("connectors:").strip()
+            connectors = [c for c in names.split(",") if c]
+        elif entry.startswith("question_type:"):
+            question_type = entry.removeprefix("question_type:").strip()
+
+    return connectors, question_type
 
 
 async def retriever_node(state: AgentState) -> dict:
-    """Based on the plan, invoke the relevant connectors."""
-    # TODO: pick connector based on plan, fetch data
-    return {
-        "retrieved_data": [],
-        "next_node": "analyst",
-    }
+    plan = state.get("plan", [])
+    user_id = state.get("user_id", "anonymous")
+
+    connectors, _ = _parse_plan_meta(plan)
+
+    # Fall back to mock if planner didn't specify or connector isn't registered
+    active = [REGISTRY[c] for c in connectors if c in REGISTRY] or [
+        REGISTRY[_DEFAULT_CONNECTOR]
+    ]
+
+    retrieved: list[dict[str, Any]] = []
+    for connector in active:
+        try:
+            resources = await connector.list_resources(user_id)
+            for resource in resources:
+                data = await connector.read(user_id, resource["id"])
+                retrieved.append({"source": connector.name, "resource": resource, "data": data})
+        except Exception as exc:
+            logger.warning("Connector %s failed: %s", connector.name, exc)
+
+    return {"retrieved_data": retrieved, "next_node": "analyst"}

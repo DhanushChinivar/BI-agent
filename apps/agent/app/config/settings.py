@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     cors_origins: str = Field(default="http://localhost:3000")
 
+    # Phase 2: connector credentials
+    google_client_id: str = Field(default="")
+    google_client_secret: str = Field(default="")
+    google_redirect_uri: str = Field(default="http://localhost:8000/v1/oauth/google/callback")
+    notion_api_key: str = Field(default="")
+    credential_encryption_key: str = Field(default="bi-agent-default-dev-key-000000")
+
     # Observability
     langsmith_api_key: str = Field(default="")
     langsmith_project: str = Field(default="bi-agent-dev")
