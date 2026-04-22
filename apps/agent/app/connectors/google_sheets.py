@@ -1,26 +1,12 @@
 """Google Sheets connector using the Sheets v4 API."""
 from typing import Any
 
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from app.connectors.google_auth import get_google_credentials
 from app.db.crud import get_credentials
 from app.db.engine import get_session_factory
-
-_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-
-
-def _build_service(creds_data: dict):
-    creds = Credentials(
-        token=creds_data.get("access_token"),
-        refresh_token=creds_data.get("refresh_token"),
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=creds_data.get("client_id"),
-        client_secret=creds_data.get("client_secret"),
-        scopes=_SCOPES,
-    )
-    return build("sheets", "v4", credentials=creds, cache_discovery=False)
 
 
 class GoogleSheetsConnector:
@@ -36,18 +22,8 @@ class GoogleSheetsConnector:
 
     async def list_resources(self, user_id: str) -> list[dict[str, Any]]:
         creds_data = await self._creds(user_id)
-        drive = build(
-            "drive",
-            "v3",
-            credentials=Credentials(
-                token=creds_data.get("access_token"),
-                refresh_token=creds_data.get("refresh_token"),
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=creds_data.get("client_id"),
-                client_secret=creds_data.get("client_secret"),
-            ),
-            cache_discovery=False,
-        )
+        creds = await get_google_credentials(user_id, self.name, creds_data)
+        drive = build("drive", "v3", credentials=creds, cache_discovery=False)
         result = (
             drive.files()
             .list(
@@ -64,7 +40,8 @@ class GoogleSheetsConnector:
 
     async def read(self, user_id: str, resource_id: str, **kwargs: Any) -> dict[str, Any]:
         creds_data = await self._creds(user_id)
-        service = _build_service(creds_data)
+        creds = await get_google_credentials(user_id, self.name, creds_data)
+        service = build("sheets", "v4", credentials=creds, cache_discovery=False)
         range_name = kwargs.get("range", "A1:Z1000")
         try:
             meta = service.spreadsheets().get(spreadsheetId=resource_id).execute()

@@ -1,6 +1,8 @@
 """Retriever node: calls connectors to fetch data based on the plan."""
 import logging
+from typing import Any
 
+from app.cache import cache_get, cache_set
 from app.connectors import REGISTRY
 from app.graph.state import AgentState
 
@@ -30,7 +32,6 @@ async def retriever_node(state: AgentState) -> dict:
 
     connectors, _ = _parse_plan_meta(plan)
 
-    # Fall back to mock if planner didn't specify or connector isn't registered
     active = [REGISTRY[c] for c in connectors if c in REGISTRY] or [
         REGISTRY[_DEFAULT_CONNECTOR]
     ]
@@ -40,9 +41,16 @@ async def retriever_node(state: AgentState) -> dict:
         try:
             resources = await connector.list_resources(user_id)
             for resource in resources:
-                data = await connector.read(user_id, resource["id"])
+                resource_id = resource["id"]
+                cached = await cache_get(user_id, connector.name, resource_id)
+                if cached is not None:
+                    data = cached
+                else:
+                    data = await connector.read(user_id, resource_id)
+                    await cache_set(user_id, connector.name, resource_id, data)
                 retrieved.append({"source": connector.name, "resource": resource, "data": data})
         except Exception as exc:
             logger.warning("Connector %s failed: %s", connector.name, exc)
+            retrieved.append({"source": connector.name, "error": str(exc)})
 
     return {"retrieved_data": retrieved, "next_node": "analyst"}

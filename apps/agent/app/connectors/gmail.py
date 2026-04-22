@@ -2,26 +2,12 @@
 import base64
 from typing import Any
 
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from app.connectors.google_auth import get_google_credentials
 from app.db.crud import get_credentials
 from app.db.engine import get_session_factory
-
-_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
-
-
-def _build_service(creds_data: dict):
-    creds = Credentials(
-        token=creds_data.get("access_token"),
-        refresh_token=creds_data.get("refresh_token"),
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=creds_data.get("client_id"),
-        client_secret=creds_data.get("client_secret"),
-        scopes=_SCOPES,
-    )
-    return build("gmail", "v1", credentials=creds, cache_discovery=False)
 
 
 def _decode_body(payload: dict) -> str:
@@ -53,7 +39,9 @@ class GmailConnector:
 
     async def list_resources(self, user_id: str) -> list[dict[str, Any]]:
         """Return the 20 most recent message thread summaries."""
-        service = _build_service(await self._creds(user_id))
+        creds_data = await self._creds(user_id)
+        creds = await get_google_credentials(user_id, self.name, creds_data)
+        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         try:
             threads = service.users().threads().list(userId="me", maxResults=20).execute()
         except HttpError as exc:
@@ -74,7 +62,9 @@ class GmailConnector:
         return resources
 
     async def read(self, user_id: str, resource_id: str, **kwargs: Any) -> dict[str, Any]:
-        service = _build_service(await self._creds(user_id))
+        creds_data = await self._creds(user_id)
+        creds = await get_google_credentials(user_id, self.name, creds_data)
+        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         try:
             thread = service.users().threads().get(userId="me", id=resource_id, format="full").execute()
         except HttpError as exc:
@@ -94,7 +84,9 @@ class GmailConnector:
         return {"resource_id": resource_id, "messages": messages}
 
     async def search(self, user_id: str, query: str) -> list[dict[str, Any]]:
-        service = _build_service(await self._creds(user_id))
+        creds_data = await self._creds(user_id)
+        creds = await get_google_credentials(user_id, self.name, creds_data)
+        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         try:
             result = service.users().messages().list(userId="me", q=query, maxResults=10).execute()
         except HttpError as exc:

@@ -23,9 +23,15 @@ class Settings(BaseSettings):
     # Phase 2: connector credentials
     google_client_id: str = Field(default="")
     google_client_secret: str = Field(default="")
-    google_redirect_uri: str = Field(default="http://localhost:8000/v1/oauth/google/callback")
+    google_sheets_redirect_uri: str = Field(default="http://localhost:8000/v1/oauth/google-sheets/callback")
+    google_gmail_redirect_uri: str = Field(default="http://localhost:8000/v1/oauth/gmail/callback")
     notion_api_key: str = Field(default="")
+    notion_oauth_client_id: str = Field(default="")
+    notion_oauth_client_secret: str = Field(default="")
+    notion_redirect_uri: str = Field(default="http://localhost:8000/v1/oauth/notion/callback")
     credential_encryption_key: str = Field(default="bi-agent-default-dev-key-000000")
+    frontend_url: str = Field(default="http://localhost:3000")
+    redis_url: str = Field(default="redis://localhost:6379")
 
     # Observability
     langsmith_api_key: str = Field(default="")
