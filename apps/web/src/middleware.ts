@@ -1,15 +1,12 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+/**
+ * Auth middleware — Clerk is bypassed when NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is not set.
+ * Restore Clerk by replacing this file with the clerkMiddleware version once keys are added.
+ */
+import { type NextRequest, NextResponse } from "next/server";
 
-const isPublic = createRouteMatcher([
-  "/sign-in(.*)",
-  "/sign-up(.*)",
-  // BFF proxy routes handle their own auth
-  "/api/agent(.*)",
-]);
-
-export default clerkMiddleware(async (auth, req) => {
-  if (!isPublic(req)) await auth.protect();
-});
+export default function middleware(_req: NextRequest) {
+  return NextResponse.next();
+}
 
 export const config = {
   matcher: [

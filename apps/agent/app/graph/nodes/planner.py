@@ -2,6 +2,7 @@
 import json
 import logging
 
+from app.graph.message_utils import last_human_message
 from app.graph.state import AgentState
 from app.llm import chat
 
@@ -33,11 +34,7 @@ async def planner_node(state: AgentState) -> dict:
             "next_node": "retriever",
         }
 
-    # Last human message is the question to plan for
-    user_question = next(
-        (m["content"] for m in reversed(messages) if m.get("role") == "human"),
-        str(messages[-1].get("content", "")),
-    )
+    user_question = last_human_message(messages)
 
     try:
         raw = await chat(

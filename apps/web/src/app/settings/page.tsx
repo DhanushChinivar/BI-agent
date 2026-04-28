@@ -1,6 +1,5 @@
 "use client";
 
-import { useUser, UserButton } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
@@ -13,19 +12,17 @@ interface PlanInfo {
 const FREE_LIMIT = 3;
 
 export default function SettingsPage() {
-  const { user } = useUser();
   const [planInfo, setPlanInfo] = useState<PlanInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const searchParams = useSearchParams();
   const upgraded = searchParams.get("upgraded");
 
   useEffect(() => {
-    if (!user) return;
     fetch(`/api/agent/v1/plan/status`)
       .then((r) => r.json())
       .then(setPlanInfo)
       .catch(() => null);
-  }, [user]);
+  }, []);
 
   const startCheckout = async () => {
     setLoading(true);
@@ -62,22 +59,8 @@ export default function SettingsPage() {
           </div>
         )}
 
-        {/* Account */}
-        <section className="mb-8 p-5 rounded-2xl bg-zinc-900 border border-zinc-800">
-          <h2 className="text-sm font-medium text-zinc-400 mb-4">Account</h2>
-          <div className="flex items-center gap-4">
-            <UserButton />
-            <div>
-              <p className="text-sm font-medium">{user?.fullName ?? user?.username}</p>
-              <p className="text-xs text-zinc-500">{user?.primaryEmailAddress?.emailAddress}</p>
-            </div>
-          </div>
-        </section>
-
-        {/* Plan */}
         <section className="p-5 rounded-2xl bg-zinc-900 border border-zinc-800">
           <h2 className="text-sm font-medium text-zinc-400 mb-4">Plan</h2>
-
           <div className="flex items-center justify-between mb-4">
             <div>
               <p className="text-sm font-semibold">
@@ -92,9 +75,7 @@ export default function SettingsPage() {
                   {planInfo.queries_today} / {FREE_LIMIT} queries used today
                 </p>
               )}
-              {isPro && (
-                <p className="text-xs text-zinc-500 mt-0.5">Unlimited queries</p>
-              )}
+              {isPro && <p className="text-xs text-zinc-500 mt-0.5">Unlimited queries</p>}
             </div>
             <div>
               {isPro ? (

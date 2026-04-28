@@ -1,6 +1,7 @@
 """Summarizer node: streams the final natural-language answer."""
 import logging
 
+from app.graph.message_utils import last_human_message
 from app.graph.state import AgentState
 from app.llm import stream
 
@@ -21,10 +22,7 @@ async def summarizer_node(state: AgentState) -> dict:
     messages = state.get("messages", [])
     analysis = state.get("analysis", {})
 
-    user_question = next(
-        (m["content"] for m in reversed(messages) if m.get("role") == "human"),
-        "Summarize the analysis.",
-    )
+    user_question = last_human_message(messages) or "Summarize the analysis."
 
     prompt = (
         f"User question: {user_question}\n\n"

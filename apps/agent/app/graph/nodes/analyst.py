@@ -2,6 +2,7 @@
 import json
 import logging
 
+from app.graph.message_utils import last_human_message
 from app.graph.state import AgentState
 from app.llm import chat
 
@@ -40,10 +41,7 @@ async def analyst_node(state: AgentState) -> dict:
     plan = state.get("plan", [])
     retrieved_data = state.get("retrieved_data", [])
 
-    user_question = next(
-        (m["content"] for m in reversed(messages) if m.get("role") == "human"),
-        "Analyze the data.",
-    )
+    user_question = last_human_message(messages) or "Analyze the data."
 
     prompt = _build_analysis_prompt(plan, retrieved_data, user_question)
 
