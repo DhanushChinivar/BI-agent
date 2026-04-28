@@ -27,6 +27,8 @@ dependencies = [
     "notion-client>=2.2.0",
     "alembic>=1.14.0",
     "cryptography>=43.0.0",
+    "python-jose[cryptography]>=3.3.0",
+    "stripe>=10.0.0",
 ]
 
 [dependency-groups]

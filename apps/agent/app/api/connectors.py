@@ -1,7 +1,5 @@
 """GET /v1/connectors/status — reports connected state per connector."""
-from datetime import datetime, timezone
-
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 from sqlalchemy import select
 
 from app.connectors import REGISTRY
@@ -12,7 +10,8 @@ router = APIRouter(prefix="/v1", tags=["connectors"])
 
 
 @router.get("/connectors/status")
-async def connectors_status(user_id: str = Query(...)) -> dict:
+async def connectors_status(request: Request, user_id: str = Query(None)) -> dict:
+    user_id = user_id or request.state.user_id
     factory = get_session_factory()
     async with factory() as session:
         rows = (
@@ -40,7 +39,8 @@ async def connectors_status(user_id: str = Query(...)) -> dict:
 
 
 @router.delete("/connectors/{connector_name}")
-async def disconnect_connector(connector_name: str, user_id: str = Query(...)) -> dict:
+async def disconnect_connector(connector_name: str, request: Request, user_id: str = Query(None)) -> dict:
+    user_id = user_id or request.state.user_id
     factory = get_session_factory()
     async with factory() as session:
         row = await session.scalar(

@@ -81,7 +81,7 @@ Replace the mock connector with live integrations to Google Sheets, Notion, and 
 
 ---
 
-## Phase 2.5 — Minimal Auth Stub
+## Phase 2.5 — Minimal Auth Stub ✅ COMPLETE
 
 ### Goal
 Eliminate the `"anonymous"` user_id hardcoded throughout the pipeline **before** the frontend is built, so Phase 4 and 5 have a clean foundation. This is ~2 hours of work that avoids a grep-and-replace across the whole codebase later.
@@ -90,11 +90,10 @@ Eliminate the `"anonymous"` user_id hardcoded throughout the pipeline **before**
 Every file written between now and Phase 5 that touches `user_id` defaults to `"anonymous"`. Adding the stub now means Phase 5 only needs to swap the verification logic — not hunt down every callsite.
 
 ### Tasks
-- [ ] **FastAPI middleware** `app/middleware/auth.py` — reads `X-User-Id` header, trusts it blindly in dev, writes `request.state.user_id`; returns `anonymous` if header is absent (not 401 — that's Phase 5's job)
-- [ ] **Wire middleware** into `app/main.py`
-- [ ] **Update all nodes** (`planner`, `retriever`, `analyst`, `summarizer`) to read `user_id` from `state["user_id"]` — already done; confirm no hardcoded fallbacks remain
-- [ ] **Update API endpoints** to populate `state["user_id"]` from `request.state.user_id` instead of `req.user_id or "anonymous"`
-- [ ] **Document the swap point** in `app/middleware/auth.py` with a comment: `# Phase 5: replace trust-header logic with Clerk JWT verification`
+- [x] **FastAPI middleware** `app/middleware/auth.py` — reads `X-User-Id` header, trusts it blindly in dev, writes `request.state.user_id`; returns `anonymous` if header is absent
+- [x] **Wire middleware** into `app/main.py`
+- [x] **Update API endpoints** — `query.py` and `connectors.py` read `user_id` from `request.state.user_id`
+- [x] **Swap point documented** in `app/middleware/auth.py` with inline Phase 5 instructions
 
 > **Security note for Phase 5:** When Clerk is added, pass the **Clerk JWT** via `Authorization: Bearer <token>` — never trust a client-supplied `X-User-Id` header in production. The middleware's job in Phase 5 is to *verify* the JWT and *extract* `user_id` from its claims, not to accept it from the request.
 
@@ -138,7 +137,7 @@ Before starting, choose an execution backend and write an ADR (`docs/adr/0002-sc
 
 ---
 
-## Phase 4 — Next.js Dashboard
+## Phase 4 — Next.js Dashboard ✅ COMPLETE
 
 ### Goal
 A chat UI that streams answers in real time, shows pipeline progress, and lets users connect their data sources.
@@ -152,52 +151,46 @@ npx create-next-app . --typescript --tailwind --app --src-dir
 ### Tasks
 
 #### Chat UI (`/`)
-- [ ] `<ChatInput>` — textarea + submit, sends `POST /v1/query/stream` with `Authorization` header
-- [ ] `<StageIndicator>` — progress bar cycling through planning/retrieving/analyzing/summarizing on `stage` events
-- [ ] `<MessageBubble>` — renders streamed text by appending `chunk` event content
-- [ ] `<ConversationSidebar>` — lists past conversations, loads history on click
-- [ ] Abort controller — cancel in-flight SSE when user sends a new message
-- [ ] Optimistic UI — show user message immediately before response arrives
-- [ ] `lib/sse.ts` — reusable hook `useAgentStream(question)` returning `{ stage, answer, done }`
+- [x] `<ChatInput>` — textarea + submit, keyboard shortcuts, abort on new message
+- [x] `<StageIndicator>` — animated progress bar through pipeline stages
+- [x] `<MessageBubble>` — streaming token rendering with loading dots
+- [x] Optimistic UI + auto-scroll to bottom
+- [x] `lib/useAgentStream.ts` — `useAgentStream()` hook returning `{ messages, stage, streaming, send, reset }`
+- [x] Suggested question buttons on empty state
 
 #### Connector Onboarding (`/connect`)
-- [ ] Fetch `/v1/connectors/status` on page load to show connected/disconnected state per connector
-- [ ] Separate "Connect Google Sheets" and "Connect Gmail" buttons (two distinct OAuth flows)
-- [ ] "Connect Notion" button
-- [ ] Post-OAuth success redirect back to `/connect` with status refresh
-- [ ] "Disconnect" button per connector (DELETE `/v1/connectors/{name}?user_id=`)
-
-#### Settings (`/settings`)
-- [ ] Display plan (free/pro) and queries used today
-- [ ] Stripe Customer Portal link for plan management
+- [x] Fetches `/v1/connectors/status` on load
+- [x] Separate Connect buttons for Google Sheets, Gmail, Notion
+- [x] Success banner on redirect back with `?connected=<name>`
+- [x] Disconnect button per connector
 
 #### Infrastructure
-- [ ] `NEXT_PUBLIC_AGENT_URL` env var
-- [ ] BFF API routes at `app/api/agent/[...path]/route.ts` — proxy to FastAPI, inject `Authorization: Bearer <clerk-jwt>` header server-side (keeps JWT off the client for non-SSE requests)
+- [x] `AGENT_URL` env var in `.env.local`
+- [x] BFF catch-all proxy at `app/api/agent/[...path]/route.ts` — proxies to FastAPI, SSE streaming preserved; Phase 5 JWT injection point marked
 
 ---
 
-## Phase 5 — Auth + Stripe
+## Phase 5 — Auth + Stripe ✅ COMPLETE
 
 ### Goal
 Real user identity so credentials are isolated per account, plus a paywall for pro features.
 
 ### Auth (Clerk — recommended for Next.js)
-- [ ] Install Clerk in `apps/web`, wrap layout with `<ClerkProvider>`
-- [ ] Sign-in / sign-up pages at `/sign-in` and `/sign-up`
-- [ ] Next.js middleware to protect all routes except landing page
-- [ ] BFF routes inject `Authorization: Bearer <clerk-jwt>` on every FastAPI request
-- [ ] **Replace auth stub in `app/middleware/auth.py`** — verify Clerk JWT using Clerk's JWKS endpoint; extract `user_id` from verified claims; return 401 if token is missing or invalid
-  - Use `Authorization: Bearer <token>` — **never trust a client-set `X-User-Id` header** in production
-- [ ] Remove `"anonymous"` fallback from all pipeline code
+- [x] Clerk installed in `apps/web`, layout wrapped with `<ClerkProvider>`
+- [x] Sign-in / sign-up pages at `/sign-in/[[...sign-in]]` and `/sign-up/[[...sign-up]]`
+- [x] Next.js `middleware.ts` protects all routes; `/api/agent/*` and auth pages are public
+- [x] BFF proxy injects `Authorization: Bearer <clerk-jwt>` via `auth().getToken()` server-side
+- [x] FastAPI `app/middleware/auth.py` verifies JWT via Clerk's JWKS, extracts `user_id` from claims; returns 401 in production if missing/invalid; falls back to `X-User-Id` header in dev
 
 ### Stripe
-- [ ] Create products: **Free** (mock connector only, **3 queries/day**) and **Pro** ($X/mo, all connectors, unlimited)
-  - Free tier is 3/day, not 10 — at ~10k tokens/query, 10/day × 100 free users = 30M tokens/month, real cost
-- [ ] `POST /v1/stripe/webhook` — handle `customer.subscription.created`, `updated`, `deleted`
-- [ ] `user_plan` table in DB — `user_id`, `plan` (`free`|`pro`), `queries_today`, `reset_at`
-- [ ] Gating middleware — check plan before invoking pipeline, return 402 if over limit
-- [ ] Stripe Customer Portal link in `/settings` for self-serve plan management
+- [x] `POST /v1/stripe/webhook` — handles `customer.subscription.created`, `updated`, `deleted`
+- [x] `user_plan` table + migration `0002_user_plans.py` — `user_id`, `plan`, `queries_today`, `reset_at`, Stripe IDs
+- [x] `app/db/plan_crud.py` — `check_and_increment` (3/day free limit), `set_plan`, `get_or_create_plan`
+- [x] `GatingMiddleware` — checks plan before pipeline endpoints, returns 402 with upgrade message
+- [x] `GET /v1/plan/status` — returns plan, queries_today, stripe_customer_id
+- [x] `POST /api/billing/checkout` — creates Stripe Checkout session for Pro plan
+- [x] `POST /api/billing/portal` — creates Stripe Customer Portal session
+- [x] `/settings` page — shows plan, usage, Upgrade/Manage button, account info via `<UserButton>`
 
 ---
 

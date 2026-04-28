@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     frontend_url: str = Field(default="http://localhost:3000")
     redis_url: str = Field(default="redis://localhost:6379")
 
+    # Phase 5: auth + billing
+    clerk_frontend_api: str = Field(default="")   # e.g. clerk.your-domain.com
+    stripe_secret_key: str = Field(default="")
+    stripe_webhook_secret: str = Field(default="")
+    stripe_pro_price_id: str = Field(default="")
+
     # Observability
     langsmith_api_key: str = Field(default="")
     langsmith_project: str = Field(default="bi-agent-dev")
