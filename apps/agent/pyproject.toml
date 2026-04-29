@@ -36,6 +36,8 @@ dependencies = [
     "pymupdf>=1.27.2.3",
     "python-multipart>=0.0.27",
     "pillow>=12.2.0",
+    "slowapi>=0.1.9",
+    "prometheus-fastapi-instrumentator>=7.0.0",
 ]
 
 [dependency-groups]

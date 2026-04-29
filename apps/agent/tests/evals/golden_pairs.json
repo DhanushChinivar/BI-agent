@@ -1,0 +1,122 @@
+[
+  {
+    "id": "agg-001",
+    "question": "What was total revenue last quarter?",
+    "expected_keywords": ["revenue", "total", "quarter"],
+    "expected_metrics_present": true
+  },
+  {
+    "id": "agg-002",
+    "question": "What is the average deal size?",
+    "expected_keywords": ["average", "deal"],
+    "expected_metrics_present": true
+  },
+  {
+    "id": "trend-001",
+    "question": "How has revenue trended over the past 6 months?",
+    "expected_keywords": ["trend", "growth", "month"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "trend-002",
+    "question": "Is customer acquisition rate increasing or decreasing?",
+    "expected_keywords": ["customer", "acquisition", "rate"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "compare-001",
+    "question": "Compare Q3 and Q4 sales performance.",
+    "expected_keywords": ["q3", "q4", "sales"],
+    "expected_metrics_present": true
+  },
+  {
+    "id": "compare-002",
+    "question": "Which region had the highest revenue?",
+    "expected_keywords": ["region", "highest", "revenue"],
+    "expected_metrics_present": true
+  },
+  {
+    "id": "lookup-001",
+    "question": "What was the revenue from the APAC region?",
+    "expected_keywords": ["apac", "revenue"],
+    "expected_metrics_present": true
+  },
+  {
+    "id": "lookup-002",
+    "question": "Who are the top 3 customers by revenue?",
+    "expected_keywords": ["customer", "revenue", "top"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "anomaly-001",
+    "question": "Were there any unusual spikes in sales last month?",
+    "expected_keywords": ["spike", "unusual", "sales"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "anomaly-002",
+    "question": "Are there any months with significantly lower performance?",
+    "expected_keywords": ["lower", "performance", "month"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "insight-001",
+    "question": "What insights can you give me about our marketing spend?",
+    "expected_keywords": ["marketing", "spend", "insight"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "insight-002",
+    "question": "What are the key factors driving revenue growth?",
+    "expected_keywords": ["factor", "revenue", "growth"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "forecast-001",
+    "question": "Based on current trends, what revenue do you expect next quarter?",
+    "expected_keywords": ["expect", "quarter", "trend"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "operational-001",
+    "question": "What is the current pipeline value?",
+    "expected_keywords": ["pipeline", "value"],
+    "expected_metrics_present": true
+  },
+  {
+    "id": "operational-002",
+    "question": "How many deals closed this month?",
+    "expected_keywords": ["deals", "closed", "month"],
+    "expected_metrics_present": true
+  },
+  {
+    "id": "churn-001",
+    "question": "What is our customer churn rate?",
+    "expected_keywords": ["churn", "customer", "rate"],
+    "expected_metrics_present": true
+  },
+  {
+    "id": "product-001",
+    "question": "Which product line is performing best?",
+    "expected_keywords": ["product", "performing"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "cohort-001",
+    "question": "How do new customers compare to returning customers in terms of spend?",
+    "expected_keywords": ["new", "returning", "customer", "spend"],
+    "expected_metrics_present": false
+  },
+  {
+    "id": "kpi-001",
+    "question": "What are our key KPIs this quarter?",
+    "expected_keywords": ["kpi", "quarter"],
+    "expected_metrics_present": true
+  },
+  {
+    "id": "summary-001",
+    "question": "Give me an executive summary of business performance this year.",
+    "expected_keywords": ["performance", "year", "summary"],
+    "expected_metrics_present": false
+  }
+]

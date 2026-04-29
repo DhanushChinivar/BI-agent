@@ -13,12 +13,14 @@ from app.graph.nodes.retriever import retriever_node
 from app.graph.nodes.summarizer import _SYSTEM as SUMMARIZER_SYSTEM, _text_content_from_retrieved
 from app.graph.state import AgentState
 from app.llm import stream as llm_stream
+from app.middleware.rate_limit import get_user_id_for_limit, limiter
 from app.schemas.query import QueryRequest, QueryResponse
 
 router = APIRouter(prefix="/v1", tags=["query"])
 
 
 @router.post("/query", response_model=QueryResponse)
+@limiter.limit("60/minute")
 async def query(req: QueryRequest, request: Request) -> QueryResponse:
     """Non-streaming endpoint — returns the complete answer in one response."""
     user_id = request.state.user_id
@@ -86,6 +88,7 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
 
 
 @router.post("/query/stream")
+@limiter.limit("10/minute", key_func=get_user_id_for_limit)
 async def query_stream(req: QueryRequest, request: Request) -> EventSourceResponse:
     """Streaming endpoint — pushes SSE events as the pipeline progresses."""
     user_id = request.state.user_id

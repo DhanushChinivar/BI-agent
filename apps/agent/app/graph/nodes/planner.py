@@ -1,12 +1,14 @@
 """Planner node: decomposes user question into sub-tasks."""
 import json
-import logging
+import time
+
+import structlog
 
 from app.graph.message_utils import last_human_message
 from app.graph.state import AgentState
 from app.llm import chat
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 _SYSTEM = """You are the planning module of a Business Intelligence agent.
 Decompose the user's data question into an ordered, actionable plan.
@@ -35,8 +37,16 @@ Rules:
 
 
 async def planner_node(state: AgentState) -> dict:
+    t0 = time.monotonic()
+    bound = log.bind(
+        node="planner",
+        conversation_id=state.get("conversation_id"),
+        user_id=state.get("user_id"),
+    )
+
     messages = state.get("messages", [])
     if not messages:
+        bound.warning("no_messages")
         return {
             "plan": ["no question provided"],
             "action_required": False,
@@ -66,12 +76,13 @@ async def planner_node(state: AgentState) -> dict:
         if action_type:
             plan.append(f"action:{action_type}")
     except (json.JSONDecodeError, KeyError) as exc:
-        logger.warning("Planner failed to parse LLM response: %s", exc)
+        bound.warning("parse_failed", error=str(exc))
         plan = ["retrieve", "analyze", "summarize"]
         action_type = None
         action_cron = None
         action_question = None
 
+    bound.info("complete", duration_ms=round((time.monotonic() - t0) * 1000), steps=len(plan))
     return {
         "plan": plan,
         "action_required": bool(action_type),

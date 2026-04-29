@@ -1,12 +1,14 @@
 """Analyst node: computes metrics and performs LLM-powered analysis on retrieved data."""
 import json
-import logging
+import time
+
+import structlog
 
 from app.graph.message_utils import last_human_message
 from app.graph.state import AgentState
 from app.llm import chat
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 _SYSTEM = """You are the analysis module of a Business Intelligence agent.
 You receive retrieved data and a plan, then produce a structured analysis.
@@ -43,12 +45,18 @@ def _build_analysis_prompt(plan: list[str], retrieved_data: list[dict], question
 
 
 async def analyst_node(state: AgentState) -> dict:
+    t0 = time.monotonic()
+    bound = log.bind(
+        node="analyst",
+        conversation_id=state.get("conversation_id"),
+        user_id=state.get("user_id"),
+    )
+
     messages = state.get("messages", [])
     plan = state.get("plan", [])
     retrieved_data = state.get("retrieved_data", [])
 
     user_question = last_human_message(messages) or "Analyze the data."
-
     prompt = _build_analysis_prompt(plan, retrieved_data, user_question)
 
     try:
@@ -59,7 +67,8 @@ async def analyst_node(state: AgentState) -> dict:
         )
         analysis = json.loads(raw)
     except (json.JSONDecodeError, KeyError) as exc:
-        logger.warning("Analyst failed to parse LLM response: %s", exc)
+        bound.warning("parse_failed", error=str(exc))
         analysis = {"insights": ["Analysis unavailable"], "metrics": {}, "trends": [], "anomalies": []}
 
+    bound.info("complete", duration_ms=round((time.monotonic() - t0) * 1000), insights=len(analysis.get("insights", [])))
     return {"analysis": analysis, "next_node": "summarizer"}

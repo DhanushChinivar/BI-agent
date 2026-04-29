@@ -1,11 +1,13 @@
 """Summarizer node: streams the final natural-language answer."""
-import logging
+import time
+
+import structlog
 
 from app.graph.message_utils import last_human_message
 from app.graph.state import AgentState
 from app.llm import stream
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger(__name__)
 
 _SYSTEM = """You are the summarizer module of a Business Intelligence agent.
 Translate structured analysis into a clear, concise business-friendly answer.
@@ -32,6 +34,13 @@ def _text_content_from_retrieved(retrieved_data: list[dict]) -> str:
 
 
 async def summarizer_node(state: AgentState) -> dict:
+    t0 = time.monotonic()
+    bound = log.bind(
+        node="summarizer",
+        conversation_id=state.get("conversation_id"),
+        user_id=state.get("user_id"),
+    )
+
     messages = state.get("messages", [])
     analysis = state.get("analysis", {})
     retrieved_data = state.get("retrieved_data", [])
@@ -60,7 +69,8 @@ async def summarizer_node(state: AgentState) -> dict:
         ):
             chunks.append(chunk)
     except Exception as exc:
-        logger.error("Summarizer streaming failed: %s", exc)
+        bound.error("streaming_failed", error=str(exc))
         chunks = [f"Summary unavailable. Insights: {analysis.get('insights', [])}"]
 
+    bound.info("complete", duration_ms=round((time.monotonic() - t0) * 1000), tokens=len("".join(chunks)))
     return {"final_answer": "".join(chunks), "next_node": "end"}
