@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     langsmith_api_key: str = Field(default="")
     langsmith_project: str = Field(default="bi-agent-dev")
 
+    # n8n automation
+    n8n_base_url: str = Field(default="http://localhost:5678")
+    n8n_api_key: str = Field(default="")
+    webhook_secret: str = Field(default="change-me-webhook-secret")
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

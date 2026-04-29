@@ -29,6 +29,13 @@ class AgentState(TypedDict, total=False):
     # Final answer
     final_answer: str
 
+    # Action / scheduling (Phase 3)
+    action_required: bool
+    action_type: str | None        # "schedule_report" | "data_alert"
+    action_cron: str | None        # cron expression, e.g. "0 8 * * 1"
+    action_question: str | None    # question to run on schedule
+    schedule_result: dict[str, Any] | None
+
     # Control flow
-    next_node: Literal["planner", "retriever", "analyst", "summarizer", "end"]
+    next_node: Literal["planner", "retriever", "analyst", "summarizer", "action", "end"]
     error: str | None
