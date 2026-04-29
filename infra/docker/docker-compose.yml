@@ -1,5 +1,5 @@
-# Local dev stack. Used from Phase 2 onward when you need Postgres + Redis locally.
-# Run from repo root:  docker compose -f infra/docker/docker-compose.yml up
+# Full local stack — run from repo root: make dev
+# Services: postgres, redis, agent (FastAPI), web (Next.js), n8n
 
 services:
   postgres:
@@ -12,11 +12,72 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U biagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  agent:
+    build:
+      context: ../..
+      dockerfile: infra/docker/agent.Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../../apps/agent/.env
+    environment:
+      # Override DB/Redis to use container hostnames, not localhost
+      DATABASE_URL: postgresql+asyncpg://biagent:biagent@postgres/biagent
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/web.Dockerfile
+    ports:
+      - "3000:3000"
+    env_file:
+      - ../../apps/web/.env.local
+    environment:
+      # Override to use container hostname instead of localhost
+      AGENT_URL: http://agent:8000
+    depends_on:
+      - agent
+    restart: unless-stopped
+
+  n8n:
+    image: n8nio/n8n
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: admin
+      N8N_BASIC_AUTH_PASSWORD: admin
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      WEBHOOK_URL: http://localhost:5678
+      AGENT_URL: http://agent:8000
+    volumes:
+      - n8n_data:/home/node/.n8n
+    restart: unless-stopped
 
 volumes:
   pgdata:
+  n8n_data:
