@@ -16,9 +16,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 COPY --from=builder /build/.venv ./.venv
-COPY apps/agent/app        ./app
-COPY apps/agent/migrations ./migrations
-COPY apps/agent/alembic.ini ./
+COPY apps/agent/app      ./app
+COPY infra/db/migrations ./migrations
+COPY infra/db/alembic.ini ./
 
 EXPOSE 8000
 # Run migrations then start the server
