@@ -11,6 +11,11 @@ logger = logging.getLogger(__name__)
 _SYSTEM = """You are the analysis module of a Business Intelligence agent.
 You receive retrieved data and a plan, then produce a structured analysis.
 
+The data may be tabular (rows with numeric columns) OR text documents (rows with a "content" field).
+Handle both cases:
+- Tabular data: compute metrics, identify trends and anomalies
+- Text/document data: extract key points, relevant facts, and direct answers to the user's question as insights; leave metrics/trends/anomalies empty if inapplicable
+
 Respond with JSON only — no prose, no markdown fences:
 {
   "insights": ["<insight 1>", "<insight 2>", ...],
@@ -20,11 +25,12 @@ Respond with JSON only — no prose, no markdown fences:
 }
 
 Rules:
-- insights: 2–5 key findings directly answering the user's question
-- metrics: computed numbers (totals, averages, growth rates) as key-value pairs
-- trends: directional patterns observed in the data (can be empty list)
-- anomalies: unexpected values or outliers (can be empty list)
-- Be precise with numbers; derive them from the data provided"""
+- insights: 2–5 key findings directly answering the user's question (required — never empty)
+- metrics: computed numbers for tabular data; empty object {} for pure text documents
+- trends: directional patterns; empty list [] if not applicable
+- anomalies: unexpected values; empty list [] if not applicable
+- Be precise with numbers; derive them from the data provided
+- For text documents, quote or paraphrase the most relevant passages as insights"""
 
 
 def _build_analysis_prompt(plan: list[str], retrieved_data: list[dict], question: str) -> str:

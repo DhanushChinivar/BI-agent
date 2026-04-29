@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import billing, connectors, health, oauth, query, stripe_webhooks
+from app.api import billing, connectors, health, oauth, query, stripe_webhooks, upload
 from app.config.settings import get_settings
 from app.middleware.auth import AuthMiddleware
 from app.middleware.gating import GatingMiddleware
@@ -39,6 +39,7 @@ def create_app() -> FastAPI:
     app.include_router(connectors.router)
     app.include_router(stripe_webhooks.router)
     app.include_router(billing.router)
+    app.include_router(upload.router)
     return app
 
 

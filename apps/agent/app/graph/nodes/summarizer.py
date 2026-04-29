@@ -15,14 +15,31 @@ Guidelines:
 - Support it with the most relevant metrics and insights (bullet points or short paragraphs)
 - Flag any anomalies or caveats at the end
 - Use plain language — no jargon, no JSON, no markdown headers
-- Keep the total response under 300 words"""
+- Keep the total response under 300 words
+- If the raw document text is provided, use it directly to answer the question when structured analysis is sparse"""
+
+
+def _text_content_from_retrieved(retrieved_data: list[dict]) -> str:
+    """Pull out any plain-text content from uploaded documents."""
+    texts: list[str] = []
+    for item in retrieved_data:
+        data = item.get("data", {})
+        rows = data.get("rows", []) if isinstance(data, dict) else []
+        for row in rows:
+            if isinstance(row, dict) and "content" in row and len(row) == 1:
+                texts.append(str(row["content"]))
+    return "\n\n".join(texts)
 
 
 async def summarizer_node(state: AgentState) -> dict:
     messages = state.get("messages", [])
     analysis = state.get("analysis", {})
+    retrieved_data = state.get("retrieved_data", [])
 
     user_question = last_human_message(messages) or "Summarize the analysis."
+
+    raw_text = _text_content_from_retrieved(retrieved_data)
+    raw_section = f"\n\nRaw document text (use this to answer if analysis is sparse):\n{raw_text}" if raw_text else ""
 
     prompt = (
         f"User question: {user_question}\n\n"
@@ -31,6 +48,7 @@ async def summarizer_node(state: AgentState) -> dict:
         f"Metrics: {analysis.get('metrics', {})}\n"
         f"Trends: {analysis.get('trends', [])}\n"
         f"Anomalies: {analysis.get('anomalies', [])}"
+        f"{raw_section}"
     )
 
     chunks: list[str] = []

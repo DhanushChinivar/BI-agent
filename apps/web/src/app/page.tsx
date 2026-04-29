@@ -5,6 +5,7 @@ import { ChatInput } from "@/components/ChatInput";
 import { MessageBubble } from "@/components/MessageBubble";
 import { StageIndicator } from "@/components/StageIndicator";
 import { useAgentStream } from "@/lib/useAgentStream";
+import { UploadPanel } from "@/components/UploadPanel";
 
 export default function Home() {
   const { messages, stage, streaming, send, reset } = useAgentStream();
@@ -29,6 +30,7 @@ export default function Home() {
             + New conversation
           </button>
         </nav>
+        <UploadPanel />
         <div className="px-3 py-4 border-t border-zinc-800 space-y-1">
           <a
             href="/connect"

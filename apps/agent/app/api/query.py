@@ -10,7 +10,7 @@ from app.graph.builder import graph
 from app.graph.nodes.analyst import analyst_node
 from app.graph.nodes.planner import planner_node
 from app.graph.nodes.retriever import retriever_node
-from app.graph.nodes.summarizer import _SYSTEM as SUMMARIZER_SYSTEM
+from app.graph.nodes.summarizer import _SYSTEM as SUMMARIZER_SYSTEM, _text_content_from_retrieved
 from app.graph.state import AgentState
 from app.llm import stream as llm_stream
 from app.schemas.query import QueryRequest, QueryResponse
@@ -58,6 +58,13 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
     yield _sse("stage", {"stage": "summarizing", "message": "Writing your answer…"})
 
     analysis = state.get("analysis", {})
+    retrieved_data = state.get("retrieved_data", [])
+    raw_text = _text_content_from_retrieved(retrieved_data)
+    raw_section = (
+        f"\n\nRaw document text (use this to answer if analysis is sparse):\n{raw_text}"
+        if raw_text
+        else ""
+    )
     prompt = (
         f"User question: {req.message}\n\n"
         f"Analysis results:\n"
@@ -65,6 +72,7 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
         f"Metrics: {analysis.get('metrics', {})}\n"
         f"Trends: {analysis.get('trends', [])}\n"
         f"Anomalies: {analysis.get('anomalies', [])}"
+        f"{raw_section}"
     )
 
     async for chunk in llm_stream(
