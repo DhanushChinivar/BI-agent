@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 interface PlanInfo {
@@ -11,7 +11,7 @@ interface PlanInfo {
 
 const FREE_LIMIT = 3;
 
-export default function SettingsPage() {
+function SettingsPageInner() {
   const [planInfo, setPlanInfo] = useState<PlanInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const searchParams = useSearchParams();
@@ -111,5 +111,13 @@ export default function SettingsPage() {
         </section>
       </div>
     </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
+      <SettingsPageInner />
+    </Suspense>
   );
 }

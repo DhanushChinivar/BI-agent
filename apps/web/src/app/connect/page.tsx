@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
 interface ConnectorStatus {
@@ -27,9 +27,9 @@ const CONNECTOR_META: Record<string, { label: string; description: string; color
   },
 };
 
-const USER_ID = "dev-user"; // replaced by Clerk userId in Phase 5
+const USER_ID = "dev-user";
 
-export default function ConnectPage() {
+function ConnectPageInner() {
   const [statuses, setStatuses] = useState<ConnectorStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const searchParams = useSearchParams();
@@ -111,5 +111,13 @@ export default function ConnectPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function ConnectPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
+      <ConnectPageInner />
+    </Suspense>
   );
 }
