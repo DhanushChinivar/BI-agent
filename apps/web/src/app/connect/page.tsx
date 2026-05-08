@@ -1,5 +1,6 @@
 "use client";
 
+import { useUser } from "@clerk/nextjs";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 
@@ -22,23 +23,23 @@ const CONNECTOR_META: Record<string, { label: string; description: string; color
   },
 };
 
-const USER_ID = "dev-user";
-
 function ConnectPageInner() {
+  const { user } = useUser();
+  const userId = user?.id ?? "dev-user";
   const [statuses, setStatuses] = useState<ConnectorStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const searchParams = useSearchParams();
   const justConnected = searchParams.get("connected");
 
   useEffect(() => {
-    fetch(`/api/agent/v1/connectors/status?user_id=${USER_ID}`)
+    fetch(`/api/agent/v1/connectors/status?user_id=${userId}`)
       .then((r) => r.json())
       .then((data) => setStatuses(data.connectors ?? []))
       .finally(() => setLoading(false));
   }, [justConnected]);
 
   const disconnect = async (name: string) => {
-    await fetch(`/api/agent/v1/connectors/${name}?user_id=${USER_ID}`, { method: "DELETE" });
+    await fetch(`/api/agent/v1/connectors/${name}?user_id=${userId}`, { method: "DELETE" });
     setStatuses((prev) =>
       prev.map((s) => (s.connector === name ? { ...s, connected: false, last_updated: null } : s))
     );
@@ -92,7 +93,7 @@ function ConnectPageInner() {
                       </button>
                     ) : (
                       <a
-                        href={`/api/agent/v1/oauth/${s.connector.replace("_", "-")}/start?user_id=${USER_ID}`}
+                        href={`/api/agent/v1/oauth/${s.connector.replace("_", "-")}/start?user_id=${userId}`}
                         className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors"
                       >
                         Connect
