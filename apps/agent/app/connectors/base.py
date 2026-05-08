@@ -1,4 +1,4 @@
-"""Common interface every data connector (Sheets, Notion, Gmail, ...) must implement.
+"""Common interface every data connector (Sheets, Gmail, CSV upload, ...) must implement.
 
 Keeps agent nodes decoupled from transport details — swap providers without
 touching graph code. Concrete adapters land in Phase 2.

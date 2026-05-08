@@ -7,9 +7,9 @@ from app.graph.nodes.retriever import _parse_plan_meta, retriever_node
 
 
 def test_parse_plan_meta_extracts_connectors():
-    plan = ["question_type:aggregation", "connectors:google_sheets,notion", "retrieve data"]
+    plan = ["question_type:aggregation", "connectors:google_sheets,gmail", "retrieve data"]
     connectors, question_type = _parse_plan_meta(plan)
-    assert connectors == ["google_sheets", "notion"]
+    assert connectors == ["google_sheets", "gmail"]
     assert question_type == "aggregation"
 
 

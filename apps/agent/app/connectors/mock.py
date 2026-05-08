@@ -8,7 +8,6 @@ class MockConnector:
     _RESOURCES = [
         {"id": "sheet-1", "title": "Q4 Sales 2024", "type": "spreadsheet"},
         {"id": "sheet-2", "title": "Marketing Spend 2024", "type": "spreadsheet"},
-        {"id": "page-1", "title": "Product Roadmap", "type": "notion_page"},
     ]
 
     _DATA: dict[str, dict[str, Any]] = {
@@ -29,11 +28,6 @@ class MockConnector:
                 {"month": "November", "spend": 42000, "channel": "social"},
                 {"month": "December", "spend": 55000, "channel": "paid_search"},
             ],
-        },
-        "page-1": {
-            "resource_id": "page-1",
-            "title": "Product Roadmap",
-            "content": "Q1 2025: launch mobile app. Q2 2025: API integrations. Q3 2025: enterprise tier.",
         },
     }
 

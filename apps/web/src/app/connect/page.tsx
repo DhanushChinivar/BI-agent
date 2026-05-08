@@ -20,11 +20,6 @@ const CONNECTOR_META: Record<string, { label: string; description: string; color
     description: "Search and summarise emails. Requires Gmail read access.",
     color: "text-red-400",
   },
-  notion: {
-    label: "Notion",
-    description: "Read pages and databases from your workspace.",
-    color: "text-zinc-300",
-  },
 };
 
 const USER_ID = "dev-user";

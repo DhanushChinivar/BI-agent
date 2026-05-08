@@ -1,6 +1,6 @@
 # AI Business Intelligence Agent
 
-A full-stack, multi-agent BI platform. Connect Google Sheets, Notion, and Gmail, ask natural-language questions, and get streamed insights — with scheduled reports and data alerts via n8n.
+A full-stack, multi-agent BI platform. Connect Google Sheets and Gmail, ask natural-language questions, and get streamed insights — with scheduled reports and data alerts via n8n.
 
 ## Architecture
 
@@ -12,8 +12,7 @@ Browser → Next.js (Clerk auth) → FastAPI BFF proxy
                              LangGraph pipeline
                       planner → retriever → analyst → summarizer → [action_node]
                                    ↓                                     ↓
-                          Google Sheets / Notion                        n8n
-                          Gmail / CSV upload
+                          Google Sheets / Gmail / CSV upload            n8n
 ```
 
 ## Stack
@@ -73,11 +72,6 @@ make ps         # show running containers
 5. Visit `http://localhost:8000/v1/oauth/google-sheets/start?user_id=<your-id>` to connect
 
 > **Gmail note:** The `gmail.readonly` scope requires Google OAuth verification for public apps. Keep your GCP project in **Testing mode** (max 100 users) for local/portfolio use.
-
-### Notion
-1. Create an integration at [notion.so/my-integrations](https://www.notion.so/my-integrations)
-2. Copy the integration token → set `NOTION_API_KEY` in `apps/agent/.env`
-3. Share your Notion pages with the integration
 
 ### n8n workflows
 After `make dev`, import the bundled workflows:

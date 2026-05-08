@@ -58,7 +58,7 @@ export default function Home() {
             <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
               <h1 className="text-2xl font-semibold text-zinc-200">Ask anything about your data</h1>
               <p className="text-sm text-zinc-500 max-w-sm">
-                Connect Google Sheets, Notion, or Gmail and ask natural-language questions.
+                Connect Google Sheets or Gmail and ask natural-language questions.
               </p>
               <div className="grid grid-cols-1 gap-2 mt-4 w-full max-w-sm">
                 {[

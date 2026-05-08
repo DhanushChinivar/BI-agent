@@ -29,7 +29,6 @@ graph TD
         subgraph Connectors ["Data Connectors"]
             Sheets["Google Sheets"]
             Gmail["Gmail"]
-            Notion["Notion"]
             CSV["CSV / PDF Upload"]
             Mock["Mock (dev)"]
         end

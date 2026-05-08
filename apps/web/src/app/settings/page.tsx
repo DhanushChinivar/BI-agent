@@ -103,7 +103,7 @@ function SettingsPageInner() {
               <p className="text-xs text-zinc-500 mb-2">Pro includes:</p>
               <ul className="text-xs text-zinc-400 space-y-1">
                 <li>✓ Unlimited queries per day</li>
-                <li>✓ Google Sheets, Gmail, and Notion connectors</li>
+                <li>✓ Google Sheets and Gmail connectors</li>
                 <li>✓ Priority support</li>
               </ul>
             </div>

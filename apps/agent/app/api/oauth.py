@@ -1,4 +1,4 @@
-"""OAuth2 initiation and callback endpoints for Google (Sheets + Gmail) and Notion."""
+"""OAuth2 initiation and callback endpoints for Google Sheets and Gmail."""
 import logging
 import secrets
 
@@ -119,54 +119,3 @@ async def gmail_callback(code: str = Query(...), state: str = Query(...)):
 
     return RedirectResponse(f"{settings.frontend_url}/connect?connected=gmail")
 
-
-# ── Notion ─────────────────────────────────────────────────────────────────────
-
-@router.get("/notion/start")
-async def notion_start(user_id: str = Query(...)):
-    settings = get_settings()
-    state = secrets.token_urlsafe(16)
-    _pending[state] = {"user_id": user_id, "connector": "notion"}
-    auth_url = (
-        f"https://api.notion.com/v1/oauth/authorize"
-        f"?client_id={settings.notion_oauth_client_id}"
-        f"&response_type=code"
-        f"&owner=user"
-        f"&redirect_uri={settings.notion_redirect_uri}"
-        f"&state={state}"
-    )
-    return RedirectResponse(auth_url)
-
-
-@router.get("/notion/callback")
-async def notion_callback(code: str = Query(...), state: str = Query(...)):
-    meta = _pending.pop(state, None)
-    if not meta:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
-
-    import base64
-    import httpx
-
-    settings = get_settings()
-    credentials = base64.b64encode(
-        f"{settings.notion_oauth_client_id}:{settings.notion_oauth_client_secret}".encode()
-    ).decode()
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            "https://api.notion.com/v1/oauth/token",
-            headers={"Authorization": f"Basic {credentials}", "Content-Type": "application/json"},
-            json={"grant_type": "authorization_code", "code": code, "redirect_uri": settings.notion_redirect_uri},
-        )
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail="Notion token exchange failed")
-
-    token_data = resp.json()
-    factory = get_session_factory()
-    async with factory() as session:
-        await upsert_credentials(session, meta["user_id"], "notion", {
-            "access_token": token_data["access_token"],
-            "workspace_id": token_data.get("workspace_id"),
-        })
-
-    return RedirectResponse(f"{settings.frontend_url}/connect?connected=notion")
