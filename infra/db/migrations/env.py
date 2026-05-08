@@ -9,8 +9,10 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
-# Make app importable from the agent package
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "..", "apps", "agent"))
+# Support both local dev (relative path to apps/agent) and Docker (/app)
+_local_agent = os.path.join(os.path.dirname(__file__), "..", "..", "..", "apps", "agent")
+sys.path.insert(0, "/app")
+sys.path.insert(0, os.path.abspath(_local_agent))
 
 from app.db.engine import Base  # noqa: E402
 from app.db import models  # noqa: E402, F401 — import models so metadata is populated
@@ -18,6 +20,10 @@ from app.db import models  # noqa: E402, F401 — import models so metadata is p
 config = context.config
 if config.config_file_name:
     fileConfig(config.config_file_name)
+
+# Allow DATABASE_URL env var to override alembic.ini (needed in Docker)
+if os.environ.get("DATABASE_URL"):
+    config.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
 
 target_metadata = Base.metadata
 

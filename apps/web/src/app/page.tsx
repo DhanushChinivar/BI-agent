@@ -1,5 +1,6 @@
 "use client";
 
+import { UserButton } from "@clerk/nextjs";
 import { useEffect, useRef } from "react";
 import { ChatInput } from "@/components/ChatInput";
 import { MessageBubble } from "@/components/MessageBubble";
@@ -38,6 +39,15 @@ export default function Home() {
           >
             <span>Connect data sources</span>
           </a>
+          <a
+            href="/settings"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 transition-colors"
+          >
+            <span>Settings & billing</span>
+          </a>
+          <div className="flex items-center gap-2 px-3 py-2">
+            <UserButton />
+          </div>
         </div>
       </aside>
 
