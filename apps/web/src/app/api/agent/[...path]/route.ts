@@ -23,6 +23,7 @@ async function proxy(req: NextRequest, segments: string[]): Promise<Response> {
     headers,
     body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
     duplex: "half",
+    redirect: "manual",
   } as RequestInit);
 
   return new Response(upstream.body, {

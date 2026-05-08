@@ -53,10 +53,10 @@ async def google_sheets_start(user_id: str = Query(...)):
     settings = get_settings()
     flow = _google_flow(settings.google_sheets_redirect_uri, _GOOGLE_SHEETS_SCOPES)
     state = secrets.token_urlsafe(16)
-    _pending[state] = {"user_id": user_id, "connector": "google_sheets"}
     auth_url, _ = flow.authorization_url(
         access_type="offline", include_granted_scopes="true", state=state, prompt="consent"
     )
+    _pending[state] = {"user_id": user_id, "connector": "google_sheets", "flow": flow}
     return RedirectResponse(auth_url)
 
 
@@ -67,7 +67,7 @@ async def google_sheets_callback(code: str = Query(...), state: str = Query(...)
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
 
     settings = get_settings()
-    flow = _google_flow(settings.google_sheets_redirect_uri, _GOOGLE_SHEETS_SCOPES)
+    flow = meta["flow"]
     flow.fetch_token(code=code)
     creds = flow.credentials
 
@@ -90,10 +90,10 @@ async def gmail_start(user_id: str = Query(...)):
     settings = get_settings()
     flow = _google_flow(settings.google_gmail_redirect_uri, _GOOGLE_GMAIL_SCOPES)
     state = secrets.token_urlsafe(16)
-    _pending[state] = {"user_id": user_id, "connector": "gmail"}
     auth_url, _ = flow.authorization_url(
         access_type="offline", include_granted_scopes="true", state=state, prompt="consent"
     )
+    _pending[state] = {"user_id": user_id, "connector": "gmail", "flow": flow}
     return RedirectResponse(auth_url)
 
 
@@ -104,7 +104,7 @@ async def gmail_callback(code: str = Query(...), state: str = Query(...)):
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
 
     settings = get_settings()
-    flow = _google_flow(settings.google_gmail_redirect_uri, _GOOGLE_GMAIL_SCOPES)
+    flow = meta["flow"]
     flow.fetch_token(code=code)
     creds = flow.credentials
 
