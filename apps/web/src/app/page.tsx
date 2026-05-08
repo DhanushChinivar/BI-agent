@@ -241,13 +241,7 @@ export default function LandingPage() {
 
       {/* Footer */}
       <footer className="border-t border-zinc-800 px-6 py-10 mt-8">
-        <div className="max-w-4xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <span className="font-semibold text-indigo-400">BI Agent</span>
-          <div className="flex gap-6 text-sm text-zinc-500">
-            <Link href="/sign-in" className="hover:text-zinc-300 transition-colors">Sign in</Link>
-            <Link href="/sign-up" className="hover:text-zinc-300 transition-colors">Sign up</Link>
-            <Link href="/settings" className="hover:text-zinc-300 transition-colors">Pricing</Link>
-          </div>
+        <div className="max-w-4xl mx-auto flex items-center justify-center">
           <p className="text-xs text-zinc-600">© 2026 BI Agent. All rights reserved.</p>
         </div>
       </footer>
