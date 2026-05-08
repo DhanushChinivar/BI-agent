@@ -50,6 +50,9 @@ async def summarizer_node(state: AgentState) -> dict:
     raw_text = _text_content_from_retrieved(retrieved_data)
     raw_section = f"\n\nRaw document text (use this to answer if analysis is sparse):\n{raw_text}" if raw_text else ""
 
+    sources = [item["source"] for item in retrieved_data if "error" not in item and "source" in item]
+    sources_section = f"\n\nActive data sources: {sources}" if sources else "\n\nActive data sources: none"
+
     prompt = (
         f"User question: {user_question}\n\n"
         f"Analysis results:\n"
@@ -57,6 +60,7 @@ async def summarizer_node(state: AgentState) -> dict:
         f"Metrics: {analysis.get('metrics', {})}\n"
         f"Trends: {analysis.get('trends', [])}\n"
         f"Anomalies: {analysis.get('anomalies', [])}"
+        f"{sources_section}"
         f"{raw_section}"
     )
 

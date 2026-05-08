@@ -67,6 +67,9 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
         if raw_text
         else ""
     )
+    sources = [item["source"] for item in retrieved_data if "error" not in item and "source" in item]
+    sources_section = f"\n\nActive data sources: {sources}" if sources else "\n\nActive data sources: none"
+
     prompt = (
         f"User question: {req.message}\n\n"
         f"Analysis results:\n"
@@ -74,6 +77,7 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
         f"Metrics: {analysis.get('metrics', {})}\n"
         f"Trends: {analysis.get('trends', [])}\n"
         f"Anomalies: {analysis.get('anomalies', [])}"
+        f"{sources_section}"
         f"{raw_section}"
     )
 

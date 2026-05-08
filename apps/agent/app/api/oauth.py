@@ -17,12 +17,12 @@ _GOOGLE_SHEETS_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
     "https://www.googleapis.com/auth/drive.readonly",
     "openid",
-    "email",
+    "https://www.googleapis.com/auth/userinfo.email",
 ]
 _GOOGLE_GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "openid",
-    "email",
+    "https://www.googleapis.com/auth/userinfo.email",
 ]
 
 # In-memory state store (dev only — use Redis in production)
