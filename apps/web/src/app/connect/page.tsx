@@ -47,7 +47,7 @@ function ConnectPageInner() {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
       <div className="max-w-2xl mx-auto px-4 py-12">
-        <a href="/" className="text-sm text-zinc-500 hover:text-zinc-300 mb-8 inline-block">
+        <a href="/chat" className="text-sm text-zinc-500 hover:text-zinc-300 mb-8 inline-block">
           ← Back to chat
         </a>
         <h1 className="text-2xl font-semibold mb-2">Connect data sources</h1>
