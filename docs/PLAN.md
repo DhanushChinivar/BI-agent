@@ -1,6 +1,6 @@
 # BI Agent — Full Plan of Action
 
-> Generated: 2026-04-22  
+> Plan Date: 2026-04-22  
 > Last updated: 2026-04-22 (revised per architectural review)  
 > Stack: Python · FastAPI · LangGraph · Anthropic Claude · Next.js · PostgreSQL · Redis · n8n
 
