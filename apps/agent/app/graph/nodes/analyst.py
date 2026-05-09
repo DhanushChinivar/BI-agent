@@ -65,6 +65,8 @@ async def analyst_node(state: AgentState) -> dict:
             system=_SYSTEM,
             max_tokens=1024,
         )
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
         analysis = json.loads(raw)
     except (json.JSONDecodeError, KeyError) as exc:
         bound.warning("parse_failed", error=str(exc))

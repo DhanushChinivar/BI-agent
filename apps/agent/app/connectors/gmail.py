@@ -43,7 +43,7 @@ class GmailConnector:
         creds = await get_google_credentials(user_id, self.name, creds_data)
         service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         try:
-            threads = service.users().threads().list(userId="me", maxResults=20).execute()
+            threads = service.users().threads().list(userId="me", maxResults=5).execute()
         except HttpError as exc:
             return [{"error": str(exc)}]
 

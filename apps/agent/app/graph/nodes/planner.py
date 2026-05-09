@@ -64,6 +64,8 @@ async def planner_node(state: AgentState) -> dict:
             system=_SYSTEM,
             max_tokens=512,
         )
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
         plan_data = json.loads(raw)
         steps: list[str] = plan_data.get("steps", [])
         connectors: list[str] = plan_data.get("connectors", [])
