@@ -8,6 +8,7 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   conversationId?: string;
+  warnings?: string[];
 }
 
 export function useAgentStream() {
@@ -31,7 +32,7 @@ export function useAgentStream() {
     setStage("planning");
 
     // Placeholder assistant message we'll fill in as chunks arrive
-    setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+    setMessages((prev) => [...prev, { role: "assistant", content: "", warnings: [] }]);
 
     try {
       const res = await fetch("/api/agent/v1/query/stream", {
@@ -66,6 +67,20 @@ export function useAgentStream() {
 
             if (payload.stage) {
               setStage(payload.stage as Stage);
+            } else if (payload.connector && payload.message) {
+              // Connector warning — attach to the in-progress assistant message
+              const warn = `${payload.connector}: ${payload.message}`;
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last.role === "assistant") {
+                  next[next.length - 1] = {
+                    ...last,
+                    warnings: [...(last.warnings ?? []), warn],
+                  };
+                }
+                return next;
+              });
             } else if (payload.content !== undefined) {
               setMessages((prev) => {
                 const next = [...prev];

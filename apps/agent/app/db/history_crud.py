@@ -77,3 +77,18 @@ async def get_messages(session: AsyncSession, conversation_id: str) -> list[Chat
         .order_by(ChatMessage.created_at.asc())
     )
     return list(result.all())
+
+
+async def update_conversation_title(session: AsyncSession, conversation_id: str, title: str) -> None:
+    conv = await session.get(Conversation, conversation_id)
+    if conv:
+        conv.title = title[:256]
+        await session.commit()
+
+
+async def count_messages(session: AsyncSession, conversation_id: str) -> int:
+    from sqlalchemy import func as sqlfunc
+    result = await session.scalar(
+        select(sqlfunc.count()).where(ChatMessage.conversation_id == conversation_id)
+    )
+    return result or 0

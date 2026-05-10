@@ -6,7 +6,7 @@ export function MessageBubble({ message }: { message: Message }) {
   const isUser = message.role === "user";
 
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
+    <div className={`flex flex-col ${isUser ? "items-end" : "items-start"} mb-4`}>
       <div
         className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
           isUser
@@ -22,6 +22,20 @@ export function MessageBubble({ message }: { message: Message }) {
           </span>
         )}
       </div>
+
+      {!isUser && message.warnings && message.warnings.length > 0 && (
+        <div className="max-w-[80%] mt-1.5 space-y-1">
+          {message.warnings.map((w, i) => (
+            <div
+              key={i}
+              className="flex items-start gap-1.5 px-3 py-1.5 rounded-lg bg-amber-950/50 border border-amber-800/50 text-xs text-amber-300"
+            >
+              <span className="shrink-0 mt-px">⚠</span>
+              <span>Could not reach <strong>{w.split(":")[0]}</strong> — {w.split(": ").slice(1).join(": ") || "connection failed"}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

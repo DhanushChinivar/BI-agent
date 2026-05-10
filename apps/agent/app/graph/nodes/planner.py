@@ -13,6 +13,9 @@ log = structlog.get_logger(__name__)
 _SYSTEM = """You are the planning module of a Business Intelligence agent.
 Decompose the user's data question into an ordered, actionable plan.
 
+You may be given prior conversation turns for context. Use them to resolve follow-up questions,
+pronouns ("it", "that", "those"), and implicit references to earlier data or topics.
+
 Available connectors: google_sheets, gmail, notion.
 - notion: Notion pages and databases (wikis, docs, project trackers)
 
@@ -58,9 +61,19 @@ async def planner_node(state: AgentState) -> dict:
 
     user_question = last_human_message(messages)
 
+    # Build multi-turn context: prior turns as alternating user/assistant messages
+    # followed by the current question, so the LLM can resolve follow-ups.
+    history = [m for m in messages if m.get("role") in ("user", "assistant", "human")]
+    prior = history[:-1]  # everything before the current question
+    llm_messages: list[dict] = []
+    for m in prior[-8:]:  # keep last 4 turns (8 messages) to stay within token budget
+        role = "user" if m["role"] in ("user", "human") else "assistant"
+        llm_messages.append({"role": role, "content": m["content"]})
+    llm_messages.append({"role": "user", "content": user_question})
+
     try:
         raw = await chat(
-            messages=[{"role": "user", "content": user_question}],
+            messages=llm_messages,
             system=_SYSTEM,
             max_tokens=512,
         )
