@@ -12,6 +12,11 @@ const FEATURES = [
     desc: "Summarise threads, find patterns across emails, and extract key information from your inbox automatically.",
   },
   {
+    icon: "📝",
+    title: "Notion Workspace",
+    desc: "Query your Notion pages, docs, and databases. Great for small teams that run their business in Notion.",
+  },
+  {
     icon: "⚡",
     title: "Streamed AI Answers",
     desc: "Multi-agent pipeline - planner, retriever, analyst, summarizer - delivers answers in real time as they generate.",
@@ -22,7 +27,7 @@ const STEPS = [
   {
     number: "01",
     title: "Connect your data",
-    desc: "Link Google Sheets or Gmail via OAuth to give the agent access to your data.",
+    desc: "Link Google Sheets, Gmail, or Notion via OAuth to give the agent access to your data.",
   },
   {
     number: "02",
@@ -87,7 +92,7 @@ export default function LandingPage() {
           <span className="text-indigo-400">your business data</span>
         </h1>
         <p className="text-lg text-zinc-400 max-w-xl mx-auto mb-10">
-          Connect Google Sheets and Gmail and get AI-powered answers in seconds -
+          Connect Google Sheets, Gmail, or Notion and get AI-powered answers in seconds -
           no SQL, no dashboards, no data team required.
         </p>
         <div className="flex items-center justify-center gap-4">
@@ -179,6 +184,7 @@ export default function LandingPage() {
               <li>✓ 3 queries per day</li>
               <li>✓ Google Sheets connector</li>
               <li>✓ Gmail connector</li>
+              <li>✓ Notion connector</li>
             </ul>
             <Link
               href="/sign-up"
@@ -199,6 +205,7 @@ export default function LandingPage() {
               <li>✓ Unlimited queries</li>
               <li>✓ Google Sheets connector</li>
               <li>✓ Gmail connector</li>
+              <li>✓ Notion connector</li>
               <li>✓ Priority support</li>
             </ul>
             <Link

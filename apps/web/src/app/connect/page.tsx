@@ -21,10 +21,15 @@ const CONNECTOR_META: Record<string, { label: string; description: string; color
     description: "Search and summarise emails. Requires Gmail read access.",
     color: "text-red-400",
   },
+  notion: {
+    label: "Notion",
+    description: "Search and read pages, docs, and databases from your workspace.",
+    color: "text-zinc-100",
+  },
 };
 
 function ConnectPageInner() {
-  const { user } = useUser();
+  const { user, isLoaded } = useUser();
   const userId = user?.id ?? "dev-user";
   const [statuses, setStatuses] = useState<ConnectorStatus[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,11 +37,12 @@ function ConnectPageInner() {
   const justConnected = searchParams.get("connected");
 
   useEffect(() => {
+    if (!isLoaded) return;
     fetch(`/api/agent/v1/connectors/status?user_id=${userId}`)
       .then((r) => r.json())
       .then((data) => setStatuses(data.connectors ?? []))
       .finally(() => setLoading(false));
-  }, [justConnected]);
+  }, [justConnected, isLoaded, userId]);
 
   const disconnect = async (name: string) => {
     await fetch(`/api/agent/v1/connectors/${name}?user_id=${userId}`, { method: "DELETE" });

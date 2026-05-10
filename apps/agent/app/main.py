@@ -9,7 +9,7 @@ from slowapi.middleware import SlowAPIMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from app.api import billing, connectors, health, n8n_webhooks, oauth, query, stripe_webhooks, workflows
+from app.api import billing, connectors, conversations, health, n8n_webhooks, oauth, query, stripe_webhooks, workflows
 from app.config.settings import get_settings
 from app.middleware.auth import AuthMiddleware
 from app.middleware.gating import GatingMiddleware
@@ -51,6 +51,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(query.router)
+    app.include_router(conversations.router)
     app.include_router(oauth.router)
     app.include_router(connectors.router)
     app.include_router(stripe_webhooks.router)

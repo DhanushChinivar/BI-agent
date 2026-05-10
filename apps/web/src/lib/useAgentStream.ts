@@ -14,6 +14,7 @@ export function useAgentStream() {
   const [stage, setStage] = useState<Stage>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [activeConversationId, setActiveConversationId] = useState<string | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
 
   const send = useCallback(async (question: string, conversationId?: string) => {
@@ -21,6 +22,8 @@ export function useAgentStream() {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
+
+    const convId = conversationId ?? activeConversationId;
 
     // Optimistic user message
     setMessages((prev) => [...prev, { role: "user", content: question }]);
@@ -34,7 +37,7 @@ export function useAgentStream() {
       const res = await fetch("/api/agent/v1/query/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: question, conversation_id: conversationId }),
+        body: JSON.stringify({ message: question, conversation_id: convId }),
         signal: controller.signal,
       });
 
@@ -74,6 +77,7 @@ export function useAgentStream() {
               });
             } else if (payload.conversation_id) {
               finalConversationId = payload.conversation_id;
+              setActiveConversationId(finalConversationId);
               setMessages((prev) => {
                 const next = [...prev];
                 const last = next[next.length - 1];
@@ -103,6 +107,14 @@ export function useAgentStream() {
       setStage("done");
       setStreaming(false);
     }
+  }, [activeConversationId]);
+
+  const loadConversation = useCallback((conversationId: string, history: Message[]) => {
+    abortRef.current?.abort();
+    setActiveConversationId(conversationId);
+    setMessages(history);
+    setStage(null);
+    setStreaming(false);
   }, []);
 
   const reset = useCallback(() => {
@@ -110,7 +122,8 @@ export function useAgentStream() {
     setMessages([]);
     setStage(null);
     setStreaming(false);
+    setActiveConversationId(undefined);
   }, []);
 
-  return { messages, stage, streaming, send, reset };
+  return { messages, stage, streaming, send, reset, loadConversation, activeConversationId };
 }

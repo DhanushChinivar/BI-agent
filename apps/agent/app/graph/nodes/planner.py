@@ -13,7 +13,8 @@ log = structlog.get_logger(__name__)
 _SYSTEM = """You are the planning module of a Business Intelligence agent.
 Decompose the user's data question into an ordered, actionable plan.
 
-Available connectors: google_sheets, gmail.
+Available connectors: google_sheets, gmail, notion.
+- notion: Notion pages and databases (wikis, docs, project trackers)
 
 Respond with JSON only — no prose, no markdown fences:
 {
