@@ -37,19 +37,19 @@ event: done   {"conversation_id": "<uuid>"}
 ## Phase 2 — Real Connectors ✅ COMPLETE
 
 ### Goal
-Replace the mock connector with live integrations to Google Sheets, Notion, and Gmail. Store OAuth tokens securely per user.
+Replace the mock connector with live integrations to Google Sheets and Gmail. Store OAuth tokens securely per user.
 
 ### Completed Tasks
 - [x] Async SQLAlchemy engine + session factory (`app/db/engine.py`)
 - [x] `UserConnectorCredential` model — Fernet-encrypted credentials at rest (`app/db/models.py`)
 - [x] `get_credentials` / `upsert_credentials` CRUD (`app/db/crud.py`)
 - [x] Google Sheets connector — lists spreadsheets via Drive API, reads rows with header mapping
-- [x] Notion connector — lists/reads pages, extracts plain text from blocks, falls back to shared integration key
 - [x] Gmail connector — lists thread summaries, reads full threads, supports Gmail search queries
+> **Note:** CSV/Excel/PDF upload connector was removed — not part of the RAG chatbot scope.
 - [x] Shared `REGISTRY` dict in `app/connectors/__init__.py`
 - [x] Retriever updated to pull from `REGISTRY`
-- [x] Settings extended: `google_client_id`, `google_client_secret`, `google_redirect_uri`, `notion_api_key`, `credential_encryption_key`
-- [x] New dependencies: `google-api-python-client`, `google-auth-oauthlib`, `notion-client`, `alembic`, `cryptography`
+- [x] Settings extended: `google_client_id`, `google_client_secret`, `google_redirect_uri`, `credential_encryption_key`
+- [x] New dependencies: `google-api-python-client`, `google-auth-oauthlib`, `alembic`, `cryptography`
 
 ### Remaining Tasks
 - [x] **Alembic setup** — `infra/db/migrations/` with async env.py + first migration for `user_connector_credentials`
@@ -58,7 +58,6 @@ Replace the mock connector with live integrations to Google Sheets, Notion, and 
   - `GET /v1/oauth/google-sheets/callback` — exchange code, upsert credentials under key `"google_sheets"`
   - `GET /v1/oauth/gmail/start?user_id=` — scope: `gmail.readonly`
   - `GET /v1/oauth/gmail/callback` — exchange code, upsert credentials under key `"gmail"`
-- [x] **Notion OAuth** — `GET /v1/oauth/notion/start` + `GET /v1/oauth/notion/callback`
 - [x] **Token refresh** — `app/connectors/google_auth.py` shared helper; refreshes and persists back to DB automatically
 - [x] **`GET /v1/connectors/status?user_id=`** — returns connected/disconnected state per connector; `DELETE /v1/connectors/{name}` to disconnect
 - [x] **Error contract** — `docs/errors.md` defines behaviour for all connectors and nodes
@@ -74,7 +73,6 @@ Replace the mock connector with live integrations to Google Sheets, Notion, and 
 | `GOOGLE_CLIENT_SECRET` | GCP OAuth 2.0 client secret |
 | `GOOGLE_SHEETS_REDIRECT_URI` | Callback URL for Sheets flow |
 | `GOOGLE_GMAIL_REDIRECT_URI` | Callback URL for Gmail flow |
-| `NOTION_API_KEY` | Notion internal integration token (shared fallback) |
 | `CREDENTIAL_ENCRYPTION_KEY` | 32-char key for Fernet encryption |
 | `DATABASE_URL` | `postgresql+asyncpg://biagent:biagent@localhost/biagent` |
 | `REDIS_URL` | `redis://localhost:6379` |

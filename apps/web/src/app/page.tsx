@@ -12,11 +12,6 @@ const FEATURES = [
     desc: "Summarise threads, find patterns across emails, and extract key information from your inbox automatically.",
   },
   {
-    icon: "📁",
-    title: "CSV, Excel & PDF Upload",
-    desc: "Upload files up to 20 MB. The agent parses tables, extracts text, and answers questions instantly.",
-  },
-  {
     icon: "⚡",
     title: "Streamed AI Answers",
     desc: "Multi-agent pipeline - planner, retriever, analyst, summarizer - delivers answers in real time as they generate.",
@@ -27,7 +22,7 @@ const STEPS = [
   {
     number: "01",
     title: "Connect your data",
-    desc: "Link Google Sheets or Gmail via OAuth, or upload a CSV, Excel, or PDF file.",
+    desc: "Link Google Sheets or Gmail via OAuth to give the agent access to your data.",
   },
   {
     number: "02",
@@ -92,7 +87,7 @@ export default function LandingPage() {
           <span className="text-indigo-400">your business data</span>
         </h1>
         <p className="text-lg text-zinc-400 max-w-xl mx-auto mb-10">
-          Connect Google Sheets and Gmail, upload files, and get AI-powered answers in seconds -
+          Connect Google Sheets and Gmail and get AI-powered answers in seconds -
           no SQL, no dashboards, no data team required.
         </p>
         <div className="flex items-center justify-center gap-4">
@@ -183,7 +178,6 @@ export default function LandingPage() {
             <ul className="space-y-2 text-sm text-zinc-400 mb-8">
               <li>✓ 3 queries per day</li>
               <li>✓ Google Sheets connector</li>
-              <li>✓ CSV / Excel / PDF upload</li>
               <li>✓ Gmail connector</li>
             </ul>
             <Link
@@ -204,7 +198,6 @@ export default function LandingPage() {
             <ul className="space-y-2 text-sm text-zinc-300 mb-8">
               <li>✓ Unlimited queries</li>
               <li>✓ Google Sheets connector</li>
-              <li>✓ CSV / Excel / PDF upload</li>
               <li>✓ Gmail connector</li>
               <li>✓ Priority support</li>
             </ul>
