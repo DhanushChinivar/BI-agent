@@ -17,6 +17,7 @@ from app.db.history_crud import (
     update_conversation_title,
 )
 from app.graph.builder import graph
+from app.graph.nodes.action import action_node
 from app.graph.nodes.analyst import analyst_node
 from app.graph.nodes.planner import planner_node
 from app.graph.nodes.retriever import retriever_node
@@ -177,6 +178,22 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
     answer = "".join(full_reply)
     await _maybe_update_title(conversation_id, req.message, answer)
     await _persist_messages(conversation_id, req.message, answer)
+
+    # Trigger n8n action if the planner flagged one (scheduling / alerts)
+    if state.get("action_required"):
+        state.update(await action_node(state))
+        result = state.get("schedule_result") or {}
+        if result.get("status") == "scheduled":
+            yield _sse("schedule", {
+                "status": "scheduled",
+                "workflow": result.get("workflow"),
+                "cron": result.get("cron"),
+            })
+        elif result.get("status") == "error":
+            yield _sse("warning", {
+                "connector": "n8n",
+                "message": result.get("reason", "scheduling failed"),
+            })
 
     yield _sse("done", {"conversation_id": conversation_id})
 

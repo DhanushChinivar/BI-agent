@@ -23,6 +23,16 @@ export function MessageBubble({ message }: { message: Message }) {
         )}
       </div>
 
+      {!isUser && message.scheduled && (
+        <div className="max-w-[80%] mt-1.5 flex items-start gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-950/50 border border-indigo-700/50 text-xs text-indigo-300">
+          <span className="shrink-0 mt-px">🗓</span>
+          <span>
+            Scheduled — <strong>{message.scheduled.workflow.replace(/_/g, " ")}</strong>
+            {message.scheduled.cron ? ` (${message.scheduled.cron})` : ""}
+          </span>
+        </div>
+      )}
+
       {!isUser && message.warnings && message.warnings.length > 0 && (
         <div className="max-w-[80%] mt-1.5 space-y-1">
           {message.warnings.map((w, i) => (

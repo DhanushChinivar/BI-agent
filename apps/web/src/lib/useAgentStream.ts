@@ -9,6 +9,7 @@ export interface Message {
   content: string;
   conversationId?: string;
   warnings?: string[];
+  scheduled?: { workflow: string; cron: string };
 }
 
 export function useAgentStream() {
@@ -67,6 +68,18 @@ export function useAgentStream() {
 
             if (payload.stage) {
               setStage(payload.stage as Stage);
+            } else if (payload.status === "scheduled") {
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last.role === "assistant") {
+                  next[next.length - 1] = {
+                    ...last,
+                    scheduled: { workflow: payload.workflow, cron: payload.cron },
+                  };
+                }
+                return next;
+              });
             } else if (payload.connector && payload.message) {
               // Connector warning — attach to the in-progress assistant message
               const warn = `${payload.connector}: ${payload.message}`;

@@ -1,7 +1,7 @@
 COMPOSE       = docker compose -f infra/docker/docker-compose.yml
 COMPOSE_INFRA = docker compose -f infra/docker/docker-compose.infra.yml
 
-.PHONY: dev dev-web dev-agent infra infra-down down build migrate logs ps
+.PHONY: dev dev-web dev-agent infra infra-down down build migrate import-workflows logs ps
 
 # ── Local development (hot reload) ───────────────────────────────────────────
 
@@ -44,6 +44,9 @@ build: ## Rebuild Docker images without starting
 
 migrate: ## Run Alembic migrations inside the agent container
 	$(COMPOSE) exec agent alembic upgrade head
+
+import-workflows: ## Import n8n workflow definitions (requires N8N_API_KEY env var)
+	./apps/agent/scripts/import_workflows.sh http://localhost:5678 $(N8N_API_KEY)
 
 logs: ## Tail logs from all services
 	$(COMPOSE) logs -f
