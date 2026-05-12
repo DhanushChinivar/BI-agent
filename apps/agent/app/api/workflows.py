@@ -33,19 +33,37 @@ async def trigger_workflow(body: WorkflowTriggerRequest, request: Request) -> Wo
 
     try:
         async with httpx.AsyncClient(base_url=settings.n8n_base_url, timeout=10) as client:
-            resp = await client.post(
-                f"/api/v1/workflows/{body.workflow_id}/run",
+            # Fetch the workflow to find its webhook trigger path
+            wf_resp = await client.get(
+                f"/api/v1/workflows/{body.workflow_id}",
                 headers=headers,
-                json={
-                    "data": {**body.data, "triggered_by": "bi-agent", "user_id": request.state.user_id},
-                },
+            )
+            wf_resp.raise_for_status()
+            wf = wf_resp.json()
+
+            webhook_node = next(
+                (n for n in wf.get("nodes", []) if n.get("type") == "n8n-nodes-base.webhook"),
+                None,
+            )
+            if not webhook_node:
+                raise HTTPException(status_code=400, detail="Workflow has no webhook trigger node")
+
+            webhook_path = webhook_node.get("parameters", {}).get("path", "")
+            if not webhook_path:
+                raise HTTPException(status_code=400, detail="Webhook trigger node has no path configured")
+
+            # Active workflows use /webhook/<path>; inactive use /webhook-test/<path>
+            is_active = wf.get("active", False)
+            url_path = f"/webhook/{webhook_path}" if is_active else f"/webhook-test/{webhook_path}"
+
+            resp = await client.post(
+                url_path,
+                json={**body.data, "triggered_by": "bi-agent"},
             )
             resp.raise_for_status()
-            result = resp.json()
-            return WorkflowTriggerResponse(
-                execution_id=result.get("executionId"),
-                status="triggered",
-            )
+            return WorkflowTriggerResponse(execution_id=None, status="triggered")
+    except HTTPException:
+        raise
     except httpx.HTTPStatusError as exc:
         logger.error("n8n trigger error %s: %s", exc.response.status_code, exc.response.text)
         raise HTTPException(status_code=502, detail=f"n8n error: {exc.response.status_code}")

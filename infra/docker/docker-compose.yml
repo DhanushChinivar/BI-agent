@@ -37,9 +37,10 @@ services:
     env_file:
       - ../../apps/agent/.env
     environment:
-      # Override DB/Redis to use container hostnames, not localhost
+      # Override DB/Redis/n8n to use container hostnames, not localhost
       DATABASE_URL: postgresql+asyncpg://biagent:biagent@postgres/biagent
       REDIS_URL: redis://redis:6379
+      N8N_BASE_URL: http://n8n:5678
     depends_on:
       postgres:
         condition: service_healthy

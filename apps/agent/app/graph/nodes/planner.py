@@ -4,7 +4,7 @@ import time
 
 import structlog
 
-from app.graph.message_utils import last_human_message
+from app.graph.message_utils import get_content, get_role, last_human_message
 from app.graph.state import AgentState
 from app.llm import chat
 
@@ -63,12 +63,12 @@ async def planner_node(state: AgentState) -> dict:
 
     # Build multi-turn context: prior turns as alternating user/assistant messages
     # followed by the current question, so the LLM can resolve follow-ups.
-    history = [m for m in messages if m.get("role") in ("user", "assistant", "human")]
+    history = [m for m in messages if get_role(m) in ("user", "assistant", "human", "ai")]
     prior = history[:-1]  # everything before the current question
     llm_messages: list[dict] = []
     for m in prior[-8:]:  # keep last 4 turns (8 messages) to stay within token budget
-        role = "user" if m["role"] in ("user", "human") else "assistant"
-        llm_messages.append({"role": role, "content": m["content"]})
+        role = "user" if get_role(m) in ("user", "human") else "assistant"
+        llm_messages.append({"role": role, "content": get_content(m)})
     llm_messages.append({"role": "user", "content": user_question})
 
     try:
