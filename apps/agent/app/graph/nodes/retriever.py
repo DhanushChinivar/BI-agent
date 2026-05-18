@@ -13,8 +13,8 @@ from app.graph.state import AgentState
 log = structlog.get_logger(__name__)
 
 _DEFAULT_CONNECTOR = "mock"
-_MAX_ROWS = 150       # hard cap on tabular rows sent to LLM
-_MAX_TEXT_CHUNKS = 25  # hard cap on text/document chunks
+_MAX_ROWS = 60        # hard cap on tabular rows sent to LLM
+_MAX_TEXT_CHUNKS = 15  # hard cap on text/document chunks
 
 
 def _keywords(text: str) -> set[str]:

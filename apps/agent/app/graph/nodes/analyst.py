@@ -37,10 +37,15 @@ Rules:
 
 def _build_analysis_prompt(plan: list[str], retrieved_data: list[dict], question: str) -> str:
     steps = [p for p in plan if not p.startswith(("connectors:", "question_type:"))]
+    # Strip resource metadata — only send data rows to keep token count low
+    compact_data = [
+        {"source": r.get("source"), "data": r.get("data"), "error": r.get("error")}
+        for r in retrieved_data
+    ]
     return (
         f"User question: {question}\n\n"
         f"Plan steps: {json.dumps(steps)}\n\n"
-        f"Retrieved data:\n{json.dumps(retrieved_data, indent=2)}"
+        f"Retrieved data:\n{json.dumps(compact_data, separators=(',', ':'))}"
     )
 
 
