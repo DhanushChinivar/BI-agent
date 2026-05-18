@@ -29,11 +29,14 @@ for file in "$WORKFLOWS_DIR"/*.json; do
     continue
   fi
 
+  # Strip read-only 'tags' field rejected by n8n API
+  payload=$(python3 -c "import json,sys; d=json.load(open('$file')); d.pop('tags',None); print(json.dumps(d))")
+
   response=$(curl -sf \
     -X POST \
     -H "X-N8N-API-KEY: $N8N_API_KEY" \
     -H "Content-Type: application/json" \
-    -d @"$file" \
+    -d "$payload" \
     "$N8N_BASE_URL/api/v1/workflows")
 
   id=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])" 2>/dev/null || echo "unknown")
