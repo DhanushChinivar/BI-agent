@@ -1,5 +1,5 @@
 """Unit tests for the retriever node."""
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -21,13 +21,17 @@ def test_parse_plan_meta_empty_connectors():
 
 @pytest.mark.asyncio
 async def test_retriever_uses_mock_connector_as_fallback():
-    mock_connector = MagicMock()
-    mock_connector.name = "mock"
-    mock_connector.list_resources = AsyncMock(return_value=[{"id": "r1", "name": "Mock Sheet"}])
-    mock_connector.read = AsyncMock(return_value={"rows": [{"revenue": 100}]})
-
     with (
-        patch("app.graph.nodes.retriever.REGISTRY", {"mock": mock_connector}),
+        patch(
+            "app.graph.nodes.retriever.mcp_client.list_resources",
+            new_callable=AsyncMock,
+            return_value=[{"id": "r1", "name": "Mock Sheet"}],
+        ),
+        patch(
+            "app.graph.nodes.retriever.mcp_client.read",
+            new_callable=AsyncMock,
+            return_value={"rows": [{"revenue": 100}]},
+        ),
         patch("app.graph.nodes.retriever.cache_get", new_callable=AsyncMock, return_value=None),
         patch("app.graph.nodes.retriever.cache_set", new_callable=AsyncMock),
     ):
@@ -44,34 +48,35 @@ async def test_retriever_uses_mock_connector_as_fallback():
 
 @pytest.mark.asyncio
 async def test_retriever_uses_cache_when_available():
-    mock_connector = MagicMock()
-    mock_connector.name = "mock"
-    mock_connector.list_resources = AsyncMock(return_value=[{"id": "r1", "name": "Sheet"}])
-    mock_connector.read = AsyncMock()
-
     cached_data = {"rows": [{"revenue": 999}]}
 
+    read_mock = AsyncMock()
     with (
-        patch("app.graph.nodes.retriever.REGISTRY", {"mock": mock_connector}),
+        patch(
+            "app.graph.nodes.retriever.mcp_client.list_resources",
+            new_callable=AsyncMock,
+            return_value=[{"id": "r1", "name": "Sheet"}],
+        ),
+        patch("app.graph.nodes.retriever.mcp_client.read", read_mock),
         patch("app.graph.nodes.retriever.cache_get", new_callable=AsyncMock, return_value=cached_data),
         patch("app.graph.nodes.retriever.cache_set", new_callable=AsyncMock),
     ):
         state = {"plan": ["connectors:"], "user_id": "u1", "conversation_id": "c1"}
         result = await retriever_node(state)
 
-    # connector.read should NOT be called when cache hit
-    mock_connector.read.assert_not_called()
+    # mcp_client.read should NOT be called when cache hit
+    read_mock.assert_not_called()
     assert result["retrieved_data"][0]["data"] == cached_data
 
 
 @pytest.mark.asyncio
 async def test_retriever_handles_connector_error():
-    mock_connector = MagicMock()
-    mock_connector.name = "mock"
-    mock_connector.list_resources = AsyncMock(side_effect=RuntimeError("connection refused"))
-
     with (
-        patch("app.graph.nodes.retriever.REGISTRY", {"mock": mock_connector}),
+        patch(
+            "app.graph.nodes.retriever.mcp_client.list_resources",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("connection refused"),
+        ),
         patch("app.graph.nodes.retriever.cache_get", new_callable=AsyncMock, return_value=None),
     ):
         state = {"plan": ["connectors:"], "user_id": "u1", "conversation_id": "c1"}

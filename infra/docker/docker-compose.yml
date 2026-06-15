@@ -41,10 +41,33 @@ services:
       DATABASE_URL: postgresql+asyncpg://biagent:biagent@postgres/biagent
       REDIS_URL: redis://redis:6379
       N8N_BASE_URL: http://n8n:5678
+      MCP_SERVER_URL: http://mcp-server:8001/mcp
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      mcp-server:
+        condition: service_started
+    restart: unless-stopped
+
+  mcp-server:
+    build:
+      context: ../..
+      dockerfile: infra/docker/agent.Dockerfile
+    command: ["/app/.venv/bin/python", "-m", "app.mcp_server.server"]
+    expose:
+      - "8001"
+    env_file:
+      - ../../apps/agent/.env
+    environment:
+      # Connectors resolve per-user OAuth tokens from the same DB as the agent
+      DATABASE_URL: postgresql+asyncpg://biagent:biagent@postgres/biagent
+      REDIS_URL: redis://redis:6379
+      MCP_SERVER_HOST: 0.0.0.0
+      MCP_SERVER_PORT: "8001"
+    depends_on:
+      postgres:
         condition: service_healthy
     restart: unless-stopped
 

@@ -5,8 +5,9 @@ from typing import Any
 
 import structlog
 
+from app import mcp_client
 from app.cache import cache_get, cache_set
-from app.connectors import REGISTRY
+from app.connectors import CONNECTOR_NAMES
 from app.graph.message_utils import last_human_message
 from app.graph.state import AgentState
 
@@ -72,27 +73,25 @@ async def retriever_node(state: AgentState) -> dict:
 
     connectors, _ = _parse_plan_meta(plan)
 
-    active = [REGISTRY[c] for c in connectors if c in REGISTRY] or [
-        REGISTRY[_DEFAULT_CONNECTOR]
-    ]
+    active = [c for c in connectors if c in CONNECTOR_NAMES] or [_DEFAULT_CONNECTOR]
 
     retrieved: list[dict[str, Any]] = []
-    for connector in active:
+    for name in active:
         try:
-            resources = await connector.list_resources(user_id)
+            resources = await mcp_client.list_resources(name, user_id)
             for resource in resources:
                 resource_id = resource["id"]
-                cached = await cache_get(user_id, connector.name, resource_id)
+                cached = await cache_get(user_id, name, resource_id)
                 if cached is not None:
                     data = cached
                 else:
-                    data = await connector.read(user_id, resource_id)
-                    await cache_set(user_id, connector.name, resource_id, data)
+                    data = await mcp_client.read(name, user_id, resource_id)
+                    await cache_set(user_id, name, resource_id, data)
                 filtered = _filter_data(data, question) if isinstance(data, list) else data
-                retrieved.append({"source": connector.name, "resource": resource, "data": filtered})
+                retrieved.append({"source": name, "resource": resource, "data": filtered})
         except Exception as exc:
-            bound.warning("connector_failed", connector=connector.name, error=str(exc))
-            retrieved.append({"source": connector.name, "error": str(exc), "connector_error": True})
+            bound.warning("connector_failed", connector=name, error=str(exc))
+            retrieved.append({"source": name, "error": str(exc), "connector_error": True})
 
     bound.info("complete", duration_ms=round((time.monotonic() - t0) * 1000), sources=len(retrieved))
     return {"retrieved_data": retrieved, "next_node": "analyst"}

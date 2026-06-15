@@ -1,7 +1,7 @@
 COMPOSE       = docker compose -f infra/docker/docker-compose.yml
 COMPOSE_INFRA = docker compose -f infra/docker/docker-compose.infra.yml
 
-.PHONY: dev dev-web dev-agent infra infra-down down build migrate import-workflows logs ps
+.PHONY: dev dev-web dev-agent mcp-server infra infra-down down build migrate import-workflows logs ps
 
 # ── Local development (hot reload) ───────────────────────────────────────────
 
@@ -14,6 +14,7 @@ infra: ## Start postgres, redis, n8n in Docker (needed for local dev)
 	@echo "  n8n      → http://localhost:5678  (admin / admin)"
 	@echo ""
 	@echo "Now run in separate terminals:"
+	@echo "  make mcp-server"
 	@echo "  make dev-agent"
 	@echo "  make dev-web"
 
@@ -22,6 +23,9 @@ dev-agent: ## Run FastAPI agent locally with hot reload
 
 dev-web: ## Run Next.js locally with hot reload
 	cd apps/web && npm run dev
+
+mcp-server: ## Run the FastMCP connector server (agent connects to it as an MCP client)
+	cd apps/agent && uv run python -m app.mcp_server.server
 
 infra-down: ## Stop infrastructure containers
 	$(COMPOSE_INFRA) down

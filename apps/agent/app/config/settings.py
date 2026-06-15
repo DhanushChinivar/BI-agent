@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     n8n_api_key: str = Field(default="")
     webhook_secret: str = Field(default="change-me-webhook-secret")
 
+    # MCP: connectors are exposed as tools by a FastMCP server that the
+    # agent consumes as an MCP client. OAuth still provides the per-user tokens.
+    mcp_server_url: str = Field(default="http://localhost:8001/mcp")
+    mcp_server_host: str = Field(default="0.0.0.0")
+    mcp_server_port: int = Field(default=8001)
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

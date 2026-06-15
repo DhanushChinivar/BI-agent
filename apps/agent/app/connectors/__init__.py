@@ -10,3 +10,7 @@ REGISTRY: dict = {
     "notion": NotionConnector(),
     "mock": MockConnector(),
 }
+
+# Connector names the agent (MCP client) and planner know about. The MCP server
+# uses REGISTRY to back the tools; the rest of the app only needs the names.
+CONNECTOR_NAMES: list[str] = list(REGISTRY)

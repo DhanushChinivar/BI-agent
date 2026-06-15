@@ -27,7 +27,9 @@ app/
     state.py           AgentState TypedDict — the shared blob
     builder.py         wires nodes into a compiled graph
     nodes/             one file per node (planner, retriever, analyst, summarizer)
-  connectors/          Connector protocol + provider adapters (Phase 2)
+  connectors/          Connector protocol + provider adapters (back the MCP tools)
+  mcp_server/          FastMCP server exposing each connector as MCP tools
+  mcp_client.py        agent-side MCP client the retriever uses to call tools
   tools/               tool definitions exposed to the LLM
   llm/                 LLM provider abstraction
   db/                  SQLAlchemy models + repositories
@@ -55,8 +57,32 @@ uv run mypy app                    # type-check
 2. Register it in `app/graph/builder.py` with `g.add_node(...)` and wire edges.
 3. Add a unit test in `tests/unit/`.
 
-## Adding a connector
+## Connectors over MCP
 
-1. Create `app/connectors/yourprovider.py` with a class that conforms to `Connector` protocol.
-2. Register it in a future `connectors/registry.py` so the retriever can discover it.
-3. Mock it in tests by passing any object that implements the protocol.
+Connectors are exposed to the agent over the **Model Context Protocol (MCP)**, not
+called directly. A FastMCP server (`app/mcp_server/server.py`) wraps each connector
+and publishes three tools per source — `<connector>_list_resources`,
+`<connector>_read`, `<connector>_search`. The retriever node is an MCP client
+(`app/mcp_client.py`) that connects over streamable-http and invokes those tools.
+
+```
+retriever node ──MCP client──▶ FastMCP server ──▶ connector classes ──▶ OAuth tokens (DB)
+```
+
+OAuth is unchanged: it remains the **authorization** layer that supplies per-user
+tokens. MCP is the **transport + tool-discovery** layer on top. The connector
+classes still resolve each user's credentials from the DB, so only `user_id`
+crosses the MCP boundary — never a raw token.
+
+Run the MCP server alongside the agent:
+
+```bash
+make mcp-server          # serves on MCP_SERVER_PORT (default 8001)
+```
+
+### Adding a connector
+
+1. Create `app/connectors/yourprovider.py` with a class conforming to the `Connector` protocol.
+2. Register it in `app/connectors/__init__.py` `REGISTRY` — the MCP server auto-publishes its tools and `CONNECTOR_NAMES` picks it up.
+3. Add the connector name to the planner's available-connectors list.
+4. In tests, patch `app.graph.nodes.retriever.mcp_client.*` to avoid needing a running server.
