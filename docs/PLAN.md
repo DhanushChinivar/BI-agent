@@ -1,7 +1,7 @@
 # BI Agent — Full Plan of Action
 
 > Plan Date: 2026-04-22  
-> Last updated: 2026-04-22 (revised per architectural review)  
+> Last updated: 2026-06-16 (Phase 8 — MCP connector migration)  
 > Stack: Python · FastAPI · LangGraph · Anthropic Claude · Next.js · PostgreSQL · Redis · n8n
 
 ---
@@ -47,7 +47,7 @@ Replace the mock connector with live integrations to Google Sheets and Gmail. St
 - [x] Gmail connector — lists thread summaries, reads full threads, supports Gmail search queries
 > **Note:** CSV/Excel/PDF upload connector was removed — not part of the RAG chatbot scope.
 - [x] Shared `REGISTRY` dict in `app/connectors/__init__.py`
-- [x] Retriever updated to pull from `REGISTRY`
+- [x] Retriever updated to pull from `REGISTRY` _(superseded in Phase 8 — retriever now calls connectors over MCP; `REGISTRY` backs the MCP server)_
 - [x] Settings extended: `google_client_id`, `google_client_secret`, `google_redirect_uri`, `credential_encryption_key`
 - [x] New dependencies: `google-api-python-client`, `google-auth-oauthlib`, `alembic`, `cryptography`
 
@@ -255,6 +255,30 @@ Production-quality observability, tests, and documentation.
 
 ---
 
+## Phase 8 — MCP Connector Migration ✅ COMPLETE
+
+> Added: 2026-06-16
+
+### Goal
+Expose connectors over the **Model Context Protocol** instead of calling connector
+classes directly, so tools are standardized, discoverable, and reusable by any MCP
+client. OAuth is unchanged — it remains the authorization layer supplying per-user
+tokens; MCP is the transport/tool-discovery layer on top. Only `user_id` crosses the
+MCP boundary, never a raw token (connectors resolve credentials from the DB themselves).
+
+### Completed Tasks
+- [x] FastMCP server (`app/mcp_server/server.py`) — auto-publishes `<connector>_list_resources` / `_read` / `_search` for every entry in `REGISTRY` (12 tools)
+- [x] MCP client (`app/mcp_client.py`) — streamable-http session + structured-result unwrapping
+- [x] `retriever_node` refactored to call MCP tools; caching + relevance filtering unchanged
+- [x] `CONNECTOR_NAMES` exported from `app/connectors/__init__.py`; `REGISTRY` retained to back the server
+- [x] Settings: `MCP_SERVER_URL` / `MCP_SERVER_HOST` / `MCP_SERVER_PORT`
+- [x] New dependency: `mcp` (FastMCP / MCP Python SDK)
+- [x] `mcp-server` service added to `docker-compose.yml`; `make mcp-server` target for local runs
+- [x] `tests/unit/test_retriever.py` patches `mcp_client.*` instead of `REGISTRY`
+- [x] Verified end-to-end in Docker: agent → `mcp-server` over the container network, tool calls logged as `CallToolRequest`
+
+---
+
 ## Recommended Sequencing
 
 ```
@@ -278,10 +302,12 @@ Phase 1 ✅
 | `apps/agent/app/graph/builder.py` | LangGraph compilation |
 | `apps/agent/app/graph/state.py` | `AgentState` TypedDict |
 | `apps/agent/app/graph/nodes/planner.py` | Decomposes question → plan |
-| `apps/agent/app/graph/nodes/retriever.py` | Fetches data via connectors |
+| `apps/agent/app/graph/nodes/retriever.py` | Fetches data via MCP tools (MCP client) |
 | `apps/agent/app/graph/nodes/analyst.py` | LLM-powered analysis |
 | `apps/agent/app/graph/nodes/summarizer.py` | Streams final answer |
-| `apps/agent/app/connectors/__init__.py` | Connector registry |
+| `apps/agent/app/mcp_server/server.py` | FastMCP server exposing connectors as MCP tools |
+| `apps/agent/app/mcp_client.py` | Agent-side MCP client used by the retriever |
+| `apps/agent/app/connectors/__init__.py` | Connector registry (`REGISTRY`) backing the MCP server |
 | `apps/agent/app/db/models.py` | Encrypted credential storage |
 | `apps/agent/app/api/query.py` | REST + SSE endpoints |
 | `infra/docker/docker-compose.yml` | Local Postgres + Redis |

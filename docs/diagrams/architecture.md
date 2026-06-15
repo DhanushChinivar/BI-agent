@@ -26,6 +26,10 @@ graph TD
             Action["action_node\nTriggers n8n"]
         end
 
+        subgraph MCP ["MCP Layer"]
+            MCPServer["FastMCP Server\n&lt;connector&gt;_list_resources / _read / _search"]
+        end
+
         subgraph Connectors ["Data Connectors"]
             Sheets["Google Sheets"]
             Gmail["Gmail"]
@@ -70,8 +74,9 @@ graph TD
     Summarizer -->|action_required| Action
     Action -->|n8n REST API| Automation
 
-    Retriever --> Connectors
-    Connectors --> Redis
+    Retriever -->|MCP client over streamable-http| MCPServer
+    MCPServer --> Connectors
+    Retriever --> Redis
     Connectors --> PG
 
     Gating --> PG
@@ -89,7 +94,8 @@ graph TD
 | Component | Tech | Purpose |
 |---|---|---|
 | **web** | Next.js 16, Clerk, Tailwind | Chat UI, connector onboarding, billing settings |
-| **agent** | FastAPI, LangGraph, Anthropic SDK | Multi-agent BI pipeline, REST + SSE API |
+| **agent** | FastAPI, LangGraph, Anthropic SDK | Multi-agent BI pipeline, REST + SSE API; MCP client |
+| **mcp-server** | FastMCP (MCP Python SDK) | Serves connectors as MCP tools over streamable-http |
 | **postgres** | PostgreSQL 16 | Encrypted connector credentials, user plans |
 | **redis** | Redis 7 | Connector data cache (5-min TTL) |
 | **n8n** | n8n (Docker) | Scheduled reports and data-change alerts |

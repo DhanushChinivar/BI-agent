@@ -11,9 +11,16 @@ Browser → Next.js (Clerk auth) → FastAPI BFF proxy
                                       ↓
                              LangGraph pipeline
                       planner → retriever → analyst → summarizer → [action_node]
-                                   ↓                                     ↓
-                          Google Sheets / Gmail / Notion                n8n
+                                   ↓ (MCP client)                        ↓
+                            FastMCP connector server                    n8n
+                                   ↓
+                          Google Sheets / Gmail / Notion
 ```
+
+Connectors are exposed over the **Model Context Protocol (MCP)**: a FastMCP server
+publishes each connector's `list_resources` / `read` / `search` as MCP tools, and the
+retriever consumes them as an MCP client. OAuth remains the authorization layer that
+supplies per-user tokens — MCP is the transport/tool-discovery layer on top.
 
 ## Stack
 
@@ -21,6 +28,7 @@ Browser → Next.js (Clerk auth) → FastAPI BFF proxy
 |---|---|
 | Frontend | Next.js 16, Tailwind CSS, Clerk |
 | Backend | FastAPI, LangGraph, Anthropic Claude |
+| Connectors | MCP (FastMCP server + client) over streamable-http |
 | Database | PostgreSQL 16 (credentials + plans) |
 | Cache | Redis 7 (connector data, 5-min TTL) |
 | Automation | n8n (scheduled reports, data alerts) |
@@ -63,6 +71,10 @@ make ps         # show running containers
 ```
 
 ## Connector setup
+
+> Connectors are served as MCP tools by the `mcp-server` container (started automatically
+> by `make dev`). OAuth is unchanged — the steps below still grant per-user tokens; the
+> retriever just reaches the connectors through MCP rather than calling them directly.
 
 ### Google Sheets & Gmail
 1. Create a project at [console.cloud.google.com](https://console.cloud.google.com)
