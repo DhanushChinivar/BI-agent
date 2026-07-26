@@ -4,7 +4,7 @@ import logging
 import secrets
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 
@@ -51,7 +51,10 @@ def _google_flow(redirect_uri: str, scopes: list[str]) -> Flow:
 # ── Google Sheets ──────────────────────────────────────────────────────────────
 
 @router.get("/google-sheets/start")
-async def google_sheets_start(user_id: str = Query(...)):
+async def google_sheets_start(request: Request):
+    # Bind to the identity AuthMiddleware verified from the Clerk JWT — never a
+    # query param, which the caller controls and could set to a victim's id.
+    user_id = request.state.user_id
     settings = get_settings()
     flow = _google_flow(settings.google_sheets_redirect_uri, _GOOGLE_SHEETS_SCOPES)
     state = secrets.token_urlsafe(16)
@@ -88,7 +91,8 @@ async def google_sheets_callback(code: str = Query(...), state: str = Query(...)
 # ── Google Gmail ───────────────────────────────────────────────────────────────
 
 @router.get("/gmail/start")
-async def gmail_start(user_id: str = Query(...)):
+async def gmail_start(request: Request):
+    user_id = request.state.user_id
     settings = get_settings()
     flow = _google_flow(settings.google_gmail_redirect_uri, _GOOGLE_GMAIL_SCOPES)
     state = secrets.token_urlsafe(16)
@@ -125,7 +129,8 @@ async def gmail_callback(code: str = Query(...), state: str = Query(...)):
 # ── Notion ─────────────────────────────────────────────────────────────────────
 
 @router.get("/notion/start")
-async def notion_start(user_id: str = Query(...)):
+async def notion_start(request: Request):
+    user_id = request.state.user_id
     settings = get_settings()
     if not settings.notion_client_id:
         raise HTTPException(status_code=501, detail="Notion OAuth not configured")

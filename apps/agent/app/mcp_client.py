@@ -16,9 +16,20 @@ from app.config.settings import get_settings
 
 @asynccontextmanager
 async def _session():
-    url = get_settings().mcp_server_url
+    settings = get_settings()
+    # The MCP server gates on this shared secret; only send it when configured
+    # so local dev (empty secret on both sides) still works.
+    headers = (
+        {"X-Service-Secret": settings.mcp_service_secret}
+        if settings.mcp_service_secret
+        else None
+    )
     async with (
-        streamable_http_client(url) as (read_stream, write_stream, _),
+        streamable_http_client(settings.mcp_server_url, headers=headers) as (
+            read_stream,
+            write_stream,
+            _,
+        ),
         ClientSession(read_stream, write_stream) as session,
     ):
         await session.initialize()
