@@ -1,5 +1,5 @@
 """GET /v1/connectors/status — reports connected state per connector."""
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Request
 from sqlalchemy import select
 
 from app.connectors import REGISTRY
@@ -10,8 +10,10 @@ router = APIRouter(prefix="/v1", tags=["connectors"])
 
 
 @router.get("/connectors/status")
-async def connectors_status(request: Request, user_id: str = Query(None)) -> dict:
-    user_id = user_id or request.state.user_id
+async def connectors_status(request: Request) -> dict:
+    # Use only the verified identity; a query param would let a caller read
+    # another user's connector status.
+    user_id = request.state.user_id
     factory = get_session_factory()
     async with factory() as session:
         rows = (
@@ -39,8 +41,10 @@ async def connectors_status(request: Request, user_id: str = Query(None)) -> dic
 
 
 @router.delete("/connectors/{connector_name}")
-async def disconnect_connector(connector_name: str, request: Request, user_id: str = Query(None)) -> dict:
-    user_id = user_id or request.state.user_id
+async def disconnect_connector(connector_name: str, request: Request) -> dict:
+    # Verified identity only — otherwise a caller could disconnect another
+    # user's sources by passing ?user_id=victim.
+    user_id = request.state.user_id
     factory = get_session_factory()
     async with factory() as session:
         row = await session.scalar(
