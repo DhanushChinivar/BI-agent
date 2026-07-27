@@ -47,7 +47,9 @@ build: ## Rebuild Docker images without starting
 	$(COMPOSE) build
 
 migrate: ## Run Alembic migrations inside the agent container
-	$(COMPOSE) exec agent alembic upgrade head
+	# Invoke via `python -m` — the venv is built at /build/.venv and copied to
+	# /app/.venv, so console scripts keep a stale absolute shebang.
+	$(COMPOSE) exec agent /app/.venv/bin/python -m alembic upgrade head
 
 import-workflows: ## Import n8n workflow definitions (requires N8N_API_KEY env var)
 	./apps/agent/scripts/import_workflows.sh http://localhost:5678 $(N8N_API_KEY)

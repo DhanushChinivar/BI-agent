@@ -29,7 +29,7 @@ supplies per-user tokens — MCP is the transport/tool-discovery layer on top.
 | Frontend | Next.js 16, Tailwind CSS, Clerk |
 | Backend | FastAPI, LangGraph, Anthropic Claude |
 | Connectors | MCP (FastMCP server + client) over streamable-http |
-| Database | PostgreSQL 16 (credentials + plans) |
+| Database | PostgreSQL 16 (credentials, plans, conversation history) |
 | Cache | Redis 7 (connector data, 5-min TTL) |
 | Automation | n8n (scheduled reports, data alerts) |
 | Billing | Stripe (free: 3 queries/day, pro: unlimited) |
@@ -98,6 +98,22 @@ N8N_BASE_URL=http://localhost:5678 N8N_API_KEY=<your-key> ./apps/n8n/import.sh
 ```
 This imports `scheduled_report` (cron → query → email) and `data_change_alert` (webhook → query → email).
 
+## Production configuration
+
+Setting `APP_ENV=production` turns on a startup check that refuses to boot on
+insecure defaults. Three secrets must be set to strong, unique values:
+
+| Variable | Why |
+|---|---|
+| `CREDENTIAL_ENCRYPTION_KEY` | Encrypts every user's OAuth refresh token at rest. The committed dev default is public. |
+| `WEBHOOK_SECRET` | HMAC key for inbound n8n webhooks. Without it, anyone can forge pipeline triggers. |
+| `MCP_SERVICE_SECRET` | Shared secret between the agent and the MCP server. |
+
+> **MCP server placement:** the MCP tools trust the `user_id` they are called with —
+> authorization happens at the agent's Clerk-JWT boundary, not inside the tools.
+> Deploy `mcp-server` on a private network so it is unreachable from the internet.
+> The shared secret is defence in depth, not a substitute for network isolation.
+
 ## Running tests
 
 ```bash
@@ -112,7 +128,16 @@ uv run pytest tests/evals/ -v --timeout=120
 
 ## Docs
 
-- [`docs/diagrams/architecture.md`](docs/diagrams/architecture.md) — Mermaid architecture diagram
+- [`docs/PLAN.md`](docs/PLAN.md) — Phase-by-phase plan, current status, and remaining work
+- [`docs/diagrams/architecture.md`](docs/diagrams/architecture.md) — Mermaid architecture diagram, trust boundaries, known gaps
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records
 - [`docs/errors.md`](docs/errors.md) — Connector and node error contract
 - [`apps/agent/.env.example`](apps/agent/.env.example) — All environment variables with inline docs
+
+## Status
+
+Phases 1–9 are complete (pipeline, connectors, OAuth, dashboard, auth, billing,
+n8n automation, Docker, MCP migration, security hardening). Remaining: a real
+retrieval layer (embeddings + vector store + citations — today's retriever filters
+by keyword overlap, so this is not yet RAG in the usual sense), CI, and deployment.
+See [`docs/PLAN.md`](docs/PLAN.md) for the breakdown.

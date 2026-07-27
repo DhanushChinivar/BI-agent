@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamable_http_client
+from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
 from app.config.settings import get_settings
 
@@ -24,8 +24,11 @@ async def _session():
         if settings.mcp_service_secret
         else None
     )
+    # `streamable_http_client` takes no `headers` kwarg — it carries auth on a
+    # caller-supplied httpx client (`streamablehttp_client`, which does, is deprecated).
     async with (
-        streamable_http_client(settings.mcp_server_url, headers=headers) as (
+        create_mcp_http_client(headers=headers) as http_client,
+        streamable_http_client(settings.mcp_server_url, http_client=http_client) as (
             read_stream,
             write_stream,
             _,
@@ -61,9 +64,11 @@ def _unwrap(result: Any) -> Any:
 async def call_tool(name: str, arguments: dict[str, Any]) -> Any:
     async with _session() as session:
         result = await session.call_tool(name, arguments)
-        if result.isError:
-            raise RuntimeError(f"MCP tool {name!r} failed: {result.content}")
-        return _unwrap(result)
+    # Raise outside the session: anyio re-wraps anything thrown inside its
+    # TaskGroup, which would hide the connector's message behind an ExceptionGroup.
+    if result.isError:
+        raise RuntimeError(f"MCP tool {name!r} failed: {result.content}")
+    return _unwrap(result)
 
 
 async def list_resources(connector: str, user_id: str) -> list[dict[str, Any]]:
