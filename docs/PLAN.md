@@ -1,8 +1,30 @@
 # BI Agent — Full Plan of Action
 
 > Plan Date: 2026-04-22  
-> Last updated: 2026-06-16 (Phase 8 — MCP connector migration)  
-> Stack: Python · FastAPI · LangGraph · Anthropic Claude · Next.js · PostgreSQL · Redis · n8n
+> Last updated: 2026-07-27 (Phase 9 — security hardening; Phases 3/6/7 reconciled with shipped code)  
+> Stack: Python · FastAPI · LangGraph · Anthropic Claude · Next.js · PostgreSQL · Redis · n8n · MCP
+
+## Status at a glance
+
+| Phase | Scope | Status |
+|---|---|---|
+| 1 | Core LangGraph pipeline | ✅ Complete |
+| 2 | Real connectors + OAuth + encrypted credentials | ✅ Complete |
+| 2.5 | Auth stub | ✅ Complete (superseded by Phase 5) |
+| 3 | n8n automation workflows | ✅ Complete (n8n path chosen) |
+| 4 | Next.js dashboard | ✅ Complete |
+| 5 | Clerk auth + Stripe billing | ✅ Complete |
+| 6 | Docker + deploy | 🟡 Docker complete · deploy not started |
+| 7 | Polish (tests, evals, observability, docs) | ✅ Complete |
+| 8 | MCP connector migration | ✅ Complete |
+| 9 | Security hardening | ✅ Complete |
+| 10 | RAG retrieval layer | ❌ Not started — **the main remaining gap** |
+| 11 | CI + production deploy | ❌ Not started |
+
+> **Honest framing:** the README describes a "RAG chatbot", but there is no
+> retrieval-augmented generation in the codebase yet — no embeddings, no vector
+> store, no chunking. `retriever_node` fetches whole resources and truncates them
+> by keyword overlap. Phase 10 is what makes the RAG claim true.
 
 ---
 
@@ -46,6 +68,7 @@ Replace the mock connector with live integrations to Google Sheets and Gmail. St
 - [x] Google Sheets connector — lists spreadsheets via Drive API, reads rows with header mapping
 - [x] Gmail connector — lists thread summaries, reads full threads, supports Gmail search queries
 > **Note:** CSV/Excel/PDF upload connector was removed — not part of the RAG chatbot scope.
+- [x] Notion connector — OAuth (basic-auth token exchange), searches pages/databases, reads blocks as text chunks
 - [x] Shared `REGISTRY` dict in `app/connectors/__init__.py`
 - [x] Retriever updated to pull from `REGISTRY` _(superseded in Phase 8 — retriever now calls connectors over MCP; `REGISTRY` backs the MCP server)_
 - [x] Settings extended: `google_client_id`, `google_client_secret`, `google_redirect_uri`, `credential_encryption_key`
@@ -97,7 +120,7 @@ Every file written between now and Phase 5 that touches `user_id` defaults to `"
 
 ---
 
-## Phase 3 — n8n Automation Workflows
+## Phase 3 — n8n Automation Workflows ✅ COMPLETE
 
 ### Goal
 Let users schedule recurring reports and data-change alerts. The agent can also decide during a conversation to trigger a workflow.
@@ -113,25 +136,23 @@ Before starting, choose an execution backend and write an ADR (`docs/adr/0002-sc
 | **n8n Cloud** | Zero ops, always-on | $20/mo |
 | **apscheduler in-process** | No extra service, one less deploy | No visual editor, less flexible |
 
-**Recommendation:** Use `apscheduler` for MVP (saves ops cost, simpler deploy). Use n8n if the visual workflow editor is part of the demo story.
+**Decision:** n8n self-hosted was chosen over `apscheduler` — the visual workflow
+editor is part of the demo story. Recorded in `docs/adr/0002-scheduling-backend.md`.
+The apscheduler path below is retained as the documented alternative, not as pending work.
 
-### Tasks (n8n path)
-- [ ] **Settings** — add `N8N_BASE_URL`, `N8N_API_KEY`, `WEBHOOK_SECRET`
-- [ ] **Inbound webhook** — `POST /v1/webhooks/n8n` — validates HMAC signature (`WEBHOOK_SECRET`), routes event to pipeline
-- [ ] **Outbound trigger** — `POST /v1/workflows/trigger` — agent calls n8n REST API to activate a workflow by ID
-- [ ] **LangGraph action node** — `action_node` added to graph; planner includes `"action"` step when question implies scheduling; node calls `/v1/workflows/trigger`
-- [ ] **n8n workflow JSONs** in `apps/n8n/`:
-  - `scheduled_report.json` — cron → `POST /v1/query` → email result
-  - `data_change_alert.json` — Sheets trigger → `POST /v1/query` → Slack/email alert
-- [ ] **Import script** — `apps/n8n/import.sh` POSTs workflow JSONs to n8n API on first run
+### Completed Tasks (n8n path)
+- [x] **Settings** — `N8N_BASE_URL`, `N8N_API_KEY`, `WEBHOOK_SECRET` in `app/config/settings.py`
+- [x] **Inbound webhook** — `POST /v1/webhooks/n8n` (`app/api/n8n_webhooks.py`) — HMAC-verified, routes event to pipeline
+- [x] **Outbound trigger** — `POST /v1/workflows/trigger` (`app/api/workflows.py`) — calls the n8n REST API
+- [x] **LangGraph action node** — `app/graph/nodes/action.py`; planner emits an action step when the question implies scheduling
+- [x] **n8n workflow JSONs** — `apps/n8n/workflows/scheduled_report.json`, `apps/n8n/workflows/data_change_alert.json` (mirrored in `infra/n8n/workflows/`)
+- [x] **Import script** — `apps/n8n/import.sh` + `make import-workflows`
+- [x] **Schedule confirmation UI** — chat surfaces the workflow the agent created
 
-### Tasks (apscheduler path)
-- [ ] Add `apscheduler>=3.10` to `pyproject.toml`
-- [ ] `app/scheduler.py` — `AsyncIOScheduler` started in FastAPI lifespan
-- [ ] `POST /v1/schedules` — create a recurring query job (cron expression + question + delivery target)
-- [ ] `GET /v1/schedules` — list user's scheduled jobs
-- [ ] `DELETE /v1/schedules/{id}` — remove a job
-- [ ] `schedules` table in DB — `id`, `user_id`, `cron`, `question`, `delivery` (email/webhook)
+### Not taken: apscheduler path
+Kept for reference only — revisit if n8n's hosting cost stops being worth the visual editor.
+- `apscheduler>=3.10`, `app/scheduler.py` with `AsyncIOScheduler` in the FastAPI lifespan
+- `POST/GET/DELETE /v1/schedules` + a `schedules` table (`user_id`, `cron`, `question`, `delivery`)
 
 ---
 
@@ -162,9 +183,17 @@ npx create-next-app . --typescript --tailwind --app --src-dir
 - [x] Success banner on redirect back with `?connected=<name>`
 - [x] Disconnect button per connector
 
+#### Conversation History (added post-scaffold)
+- [x] `conversations` + `messages` tables — migration `0003_conversations.py`, models in `app/db/models.py`
+- [x] `app/db/history_crud.py` — create/list/fetch/delete, all scoped by `user_id`
+- [x] `GET /v1/conversations`, `GET /v1/conversations/{id}/messages`, `DELETE /v1/conversations/{id}` (`app/api/conversations.py`)
+- [x] Sidebar in `/chat` — conversation list, resume, delete, "New conversation"
+- [x] Auto-generated conversation titles; multi-turn context passed into the graph
+
 #### Infrastructure
 - [x] `AGENT_URL` env var in `.env.local`
 - [x] BFF catch-all proxy at `app/api/agent/[...path]/route.ts` — proxies to FastAPI, SSE streaming preserved; Phase 5 JWT injection point marked
+- [x] Landing page at `/`; chat moved to `/chat`
 
 ---
 
@@ -176,7 +205,7 @@ Real user identity so credentials are isolated per account, plus a paywall for p
 ### Auth (Clerk — recommended for Next.js)
 - [x] Clerk installed in `apps/web`, layout wrapped with `<ClerkProvider>`
 - [x] Sign-in / sign-up pages at `/sign-in/[[...sign-in]]` and `/sign-up/[[...sign-up]]`
-- [x] Next.js `middleware.ts` protects all routes; `/api/agent/*` and auth pages are public
+- [x] Next.js `src/proxy.ts` (Next 16's rename of `middleware.ts`) protects all routes; public matchers are `/`, `/sign-in(.*)`, `/sign-up(.*)`, `/api/billing/checkout(.*)`, `/api/agent/v1/oauth/(.*)`
 - [x] BFF proxy injects `Authorization: Bearer <clerk-jwt>` via `auth().getToken()` server-side
 - [x] FastAPI `app/middleware/auth.py` verifies JWT via Clerk's JWKS, extracts `user_id` from claims; returns 401 in production if missing/invalid; falls back to `X-User-Id` header in dev
 
@@ -192,18 +221,23 @@ Real user identity so credentials are isolated per account, plus a paywall for p
 
 ---
 
-## Phase 6 — Docker + Deploy
+## Phase 6 — Docker ✅ COMPLETE · Deploy ❌ NOT STARTED
 
 ### Goal
 One-command local stack and a production-ready deployment.
 
-### Docker
-- [ ] `infra/docker/agent.Dockerfile` — multi-stage: `builder` installs deps with `uv`, `runner` copies venv
-- [ ] `infra/docker/web.Dockerfile` — `next build` with `output: standalone`, copy `.next/standalone`
-- [ ] Update `docker-compose.yml`: add `agent` and `web` services alongside postgres + redis
-- [ ] `Makefile` at repo root: `make up`, `make down`, `make migrate`, `make logs`
+### Docker ✅
+- [x] `infra/docker/agent.Dockerfile` — multi-stage: `builder` installs deps with `uv`, `runner` copies venv
+- [x] `infra/docker/web.Dockerfile` — `next build` with `output: standalone`, copy `.next/standalone`
+- [x] `docker-compose.yml`: `web`, `agent`, `mcp-server`, `postgres`, `redis`, `n8n`
+- [x] `docker-compose.infra.yml`: postgres + redis + n8n only, for hot-reload local dev
+- [x] `Makefile`: `make dev`, `make infra`, `make dev-agent`, `make dev-web`, `make mcp-server`, `make down`, `make migrate`, `make logs`, `make ps`
 
-### Deploy (Railway — recommended for MVP)
+> **Migration gotcha (already handled):** `make migrate` invokes `python -m alembic`
+> because the venv is built at `/build/.venv` and copied to `/app/.venv`, leaving
+> console scripts with a stale absolute shebang.
+
+### Deploy (Railway — recommended for MVP) ❌ NOT STARTED
 - [ ] Connect GitHub repo to Railway
 - [ ] Create services: `agent`, `web`, `postgres`, `redis`
 - [ ] Set all env vars via Railway dashboard
@@ -222,36 +256,37 @@ flyctl deploy
 
 ---
 
-## Phase 7 — Polish
+## Phase 7 — Polish ✅ COMPLETE
 
 ### Goal
 Production-quality observability, tests, and documentation.
 
 ### Evals
-- [ ] `tests/evals/golden_pairs.json` — 20+ question → expected-insight pairs
-- [ ] `tests/evals/test_pipeline.py` — run full pipeline against golden pairs, assert key metrics appear in answer
-- [ ] Track eval pass rate over time (log to LangSmith project)
+- [x] `tests/evals/golden_pairs.json` — question → expected-insight pairs
+- [x] `tests/evals/test_pipeline.py` — runs the full pipeline against golden pairs, asserts key metrics appear in the answer
+- [ ] Track eval pass rate over time (log to LangSmith project) — *not wired; runs are ad-hoc*
 
 ### Unit Tests
-- [ ] `tests/unit/test_planner.py` — mock `llm.chat`, assert plan structure
-- [ ] `tests/unit/test_analyst.py` — mock `llm.chat`, assert insight keys present
-- [ ] `tests/unit/test_retriever.py` — mock connector, assert `retrieved_data` shape
-- [ ] `tests/unit/test_summarizer.py` — mock `llm.stream`, assert `final_answer` non-empty
+- [x] `tests/unit/test_planner.py` — mocks `llm.chat`, asserts plan structure
+- [x] `tests/unit/test_analyst.py` — mocks `llm.chat`, asserts insight keys present
+- [x] `tests/unit/test_retriever.py` — patches `mcp_client.*`, asserts `retrieved_data` shape
+- [x] `tests/unit/test_summarizer.py` — mocks `llm.stream`, asserts `final_answer` non-empty
+- [x] `tests/unit/test_graph_smoke.py` — end-to-end graph compile + run
 
 ### Observability
-- [ ] Wire `structlog` across all nodes with `conversation_id`, `user_id`, `stage`, `duration_ms`
-- [ ] LangSmith tracing enabled via `LANGCHAIN_TRACING_V2=true` + `LANGSMITH_API_KEY`
-- [ ] `/metrics` endpoint (Prometheus-compatible) for query count, latency p50/p95
+- [x] `structlog` across all nodes with `conversation_id`, `user_id`, `node`, `duration_ms` (`app/observability/`; JSON renderer in production, console in dev)
+- [x] LangSmith settings (`LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`)
+- [x] `/metrics` endpoint via `prometheus-fastapi-instrumentator`
 
 ### Rate Limiting
-- [ ] Add `slowapi` middleware: 60 req/min per IP on all endpoints
-- [ ] Separate limit for `/v1/query/stream`: 10 concurrent streams per user
+- [x] `slowapi` middleware — 60 req/min per IP
+- [ ] Separate concurrency cap for `/v1/query/stream` (10 concurrent streams per user) — *not implemented; per-user quota is enforced by `GatingMiddleware` instead*
 
 ### Documentation
-- [ ] `docs/diagrams/architecture.md` — Mermaid diagram of full system
-- [ ] `docs/errors.md` — error contract for all connectors and nodes (what each returns on failure)
-- [ ] Final `README.md` — quickstart, architecture overview, connector setup guides, deploy instructions, Gmail Testing mode limitation
-- [ ] ADRs: `0002-scheduling-backend.md`, `0003-auth-provider.md`, `0004-deploy-target.md`, `0005-stripe-vs-manual-billing.md`
+- [x] `docs/diagrams/architecture.md` — Mermaid diagram of the full system
+- [x] `docs/errors.md` — error contract for all connectors and nodes
+- [x] `README.md` — quickstart, architecture overview, connector setup, Gmail Testing-mode limitation
+- [x] ADRs `0001`–`0005`
 
 ---
 
@@ -279,17 +314,102 @@ MCP boundary, never a raw token (connectors resolve credentials from the DB them
 
 ---
 
+## Phase 9 — Security Hardening ✅ COMPLETE
+
+> Added: 2026-07-27 · commits `1eb45bb`, `4146a2c`
+
+### Goal
+Close the gaps that Phase 8's new trust boundary opened, and stop insecure
+development defaults from silently reaching production.
+
+### Completed Tasks
+- [x] **MCP confused deputy** — the MCP tools trust their `user_id` argument, so the server must only be reachable by the agent. Added a shared-secret gate: the client sends `X-Service-Secret` (`app/mcp_client.py`), the server verifies it with `hmac.compare_digest` (`app/mcp_server/server.py`). Empty secret = unauthenticated, dev only.
+- [x] **Identity spoofing** — `GET /v1/connectors/status`, `DELETE /v1/connectors/{name}`, and every OAuth `/start` route now read `request.state.user_id` (verified from the Clerk JWT) instead of a caller-controlled `?user_id=` query param. Previously a caller could read or disconnect another user's sources, or bind their own OAuth grant to a victim's account.
+- [x] **Insecure production defaults** — `Settings._require_secure_secrets_in_production` fails startup when `APP_ENV=production` and `CREDENTIAL_ENCRYPTION_KEY`, `WEBHOOK_SECRET`, or `MCP_SERVICE_SECRET` is missing or still the committed dev value. Without it, a forgetful deploy would encrypt every user's refresh token with a public key and accept forged webhooks.
+- [x] **MCP client transport fix** — `streamable_http_client` takes no `headers` kwarg; auth now rides on a caller-supplied `httpx` client via `create_mcp_http_client` (the `streamablehttp_client` that accepts headers is deprecated).
+- [x] **Error surfacing** — connector failures propagate as `connector_error` entries in `retrieved_data` and reach the user instead of being swallowed.
+
+### New Settings
+| Variable | Purpose |
+|---|---|
+| `MCP_SERVICE_SECRET` | Shared secret between agent and MCP server. **Required in production.** |
+
+---
+
+## Phase 10 — RAG Retrieval Layer ❌ NOT STARTED
+
+> **This is the largest remaining gap.** The project is described as a RAG chatbot
+> but performs no retrieval-augmented generation. There are no embeddings, no vector
+> store, and no chunking anywhere in the codebase.
+
+### Current behaviour
+`retriever_node` calls `<connector>_list_resources`, then `_read`s **every** resource,
+then keeps rows whose string form shares the most word-tokens with the question —
+capped at `_MAX_ROWS = 60` / `_MAX_TEXT_CHUNKS = 15`. That is lexical truncation:
+it does not scale past a few resources, misses semantic matches, and silently drops
+data with no indication to the user.
+
+### Tasks
+- [ ] **Ingestion job** — pull connector resources on a schedule and on connect; normalize per source (sheet rows → records, Gmail threads → messages, Notion blocks → sections)
+- [ ] **Chunking** — size/overlap per content type; preserve `source`, `resource_id`, and row/message offset as metadata
+- [ ] **Vector store** — `pgvector` in the existing Postgres (no new service); `document_chunks` table with an ivfflat/hnsw index, scoped by `user_id`
+- [ ] **Embeddings** — batch on ingest, not per query; store the model id so re-embedding is detectable
+- [ ] **Hybrid retrieval** — vector similarity + the existing keyword scoring, then rerank; replaces `_filter_data`
+- [ ] **Citations** — every insight carries `source` + `resource_id` + offset; the UI renders them as links. Highest-credibility win for a BI tool
+- [ ] **Structured vs. text split** — decide explicitly: spreadsheets want SQL/pandas aggregation ("what was Q4 revenue?"), not nearest-neighbour lookup. Route tabular questions to computation and text questions to vector search
+- [ ] **Incremental sync** — track a per-resource revision so a query does not refetch everything (currently blocked by there being no ingest step at all)
+- [ ] **Retrieval evals** — recall@k against a labelled set, separate from the existing end-to-end answer evals
+
+### Sequencing note
+Incremental sync (Layer 2) and ingestion (Layer 3) are the same piece of work —
+build the ingest pipeline once and both fall out of it.
+
+---
+
+## Phase 11 — CI + Production Deploy ❌ NOT STARTED
+
+### CI
+- [ ] `.github/workflows/ci.yml` — `ruff check`, `ruff format --check`, `pytest` on the agent; `tsc --noEmit` + `next build` on the web app
+- [ ] Run on push and PR; required before merge to `main`
+- [ ] Cache `uv` and `npm` layers
+
+> There is currently no `.github/` directory — nothing lints or tests on push.
+
+### Deploy
+- [ ] Pick a target and record it in `docs/adr/0004-deploy-target.md` (the ADR exists; the deploy does not)
+- [ ] Agent entrypoint runs `alembic upgrade head` before `uvicorn`
+- [ ] All secrets set via the platform dashboard; verify `APP_ENV=production` triggers the Phase 9 secret validation
+- [ ] `mcp-server` deployed on a private network — it must not be publicly reachable even with `MCP_SERVICE_SECRET` set
+- [ ] Custom domain + TLS
+
+---
+
+## Other Remaining Work
+
+Smaller items that do not warrant their own phase:
+
+| Item | Why it matters | Effort |
+|---|---|---|
+| **OAuth state store is in-process** (`_pending` dict, `app/api/oauth.py`) | Breaks on restart and with more than one worker — every in-flight connect fails with "Invalid or expired OAuth state". Move to Redis. | ~30 min |
+| **Clerk user-deletion webhook** | No path deletes a user's credentials, conversations, or plan row when the account goes away. | Small |
+| **Connector reconnect UX** | A revoked token logs `connector_failed` and degrades the answer; the UI never tells the user to reconnect. | Small |
+| **Connector pagination/quota** | Gmail mailboxes with hundreds of threads are read in full on every query. Largely subsumed by Phase 10's ingest step. | Medium |
+| **Charts in the UI** | `analyst_node` returns metrics and trends that render as prose only. | Medium |
+| **Frontend tests** | No test coverage in `apps/web`. | Medium |
+| **Org/workspace multi-tenancy** | Connectors are per-user; teams cannot share a data source. Product decision, not a bug. | Large |
+
+---
+
 ## Recommended Sequencing
 
+Phases 1–9 are complete. Remaining order:
+
 ```
-Phase 1 ✅
-  → Phase 2  (finish OAuth, migrations, Redis cache, /connectors/status)
-  → Phase 2.5 (auth stub — eliminates "anonymous" before frontend is written)
-  → Phase 4  (frontend, unblocked by Phase 2 OAuth + connector status endpoint)
-  → Phase 5  (replace auth stub with Clerk + add Stripe)
-  → Phase 3  (n8n/apscheduler — needs real user identity to be useful)
-  → Phase 6  (deploy)
-  → Phase 7  (polish)
+Phase 11 CI (do first — an afternoon, and it protects everything after)
+  → OAuth state → Redis (30 min, blocks any multi-worker deploy)
+  → Phase 10 RAG  (ingest → chunk → pgvector → hybrid retrieval → citations)
+  → Phase 11 Deploy
+  → Charts, frontend tests, reconnect UX
 ```
 
 ---
@@ -305,11 +425,21 @@ Phase 1 ✅
 | `apps/agent/app/graph/nodes/retriever.py` | Fetches data via MCP tools (MCP client) |
 | `apps/agent/app/graph/nodes/analyst.py` | LLM-powered analysis |
 | `apps/agent/app/graph/nodes/summarizer.py` | Streams final answer |
-| `apps/agent/app/mcp_server/server.py` | FastMCP server exposing connectors as MCP tools |
+| `apps/agent/app/graph/nodes/action.py` | Triggers n8n workflows |
+| `apps/agent/app/mcp_server/server.py` | FastMCP server exposing connectors as MCP tools; `X-Service-Secret` gate |
 | `apps/agent/app/mcp_client.py` | Agent-side MCP client used by the retriever |
 | `apps/agent/app/connectors/__init__.py` | Connector registry (`REGISTRY`) backing the MCP server |
-| `apps/agent/app/db/models.py` | Encrypted credential storage |
+| `apps/agent/app/db/models.py` | Encrypted credentials, plans, conversations, messages |
+| `apps/agent/app/db/history_crud.py` | Conversation/message persistence, scoped by `user_id` |
 | `apps/agent/app/api/query.py` | REST + SSE endpoints |
-| `infra/docker/docker-compose.yml` | Local Postgres + Redis |
+| `apps/agent/app/api/oauth.py` | OAuth start/callback for Sheets, Gmail, Notion |
+| `apps/agent/app/api/conversations.py` | Conversation list/fetch/delete |
+| `apps/agent/app/middleware/auth.py` | Clerk JWT verification → `request.state.user_id` |
+| `apps/agent/app/middleware/gating.py` | Free-plan quota enforcement (402 on limit) |
+| `apps/agent/app/config/settings.py` | Settings + production secret validation (Phase 9) |
+| `apps/web/src/proxy.ts` | Clerk route protection (Next 16 middleware) |
+| `apps/web/src/app/api/agent/[...path]/route.ts` | BFF proxy — injects the Clerk JWT |
+| `infra/docker/docker-compose.yml` | Full stack: web, agent, mcp-server, postgres, redis, n8n |
+| `infra/docker/docker-compose.infra.yml` | Infra only, for hot-reload local dev |
 | `docs/errors.md` | Connector/node error contract |
 | `docs/adr/` | Architecture decision records |
