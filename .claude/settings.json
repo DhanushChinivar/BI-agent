@@ -2,10 +2,7 @@
   "permissions": {
     "allow": [
       "Skill(claude-api)",
-      "Skill(claude-api:*)",
-      "Bash(APP_ENV=production CREDENTIAL_ENCRYPTION_KEY=test-key-abcdefghijklmnop-1234 WEBHOOK_SECRET=test-webhook-secret-xyz MCP_SERVICE_SECRET=test-mcp-secret-xyz uv run python -c ' *)",
-      "Bash(read p *)",
-      "Bash([ -e \"docs/$p\" ])"
+      "Skill(claude-api:*)"
     ]
   }
 }
