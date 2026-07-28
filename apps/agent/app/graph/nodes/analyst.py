@@ -32,14 +32,24 @@ Rules:
 - trends: directional patterns; empty list [] if not applicable
 - anomalies: unexpected values; empty list [] if not applicable
 - Be precise with numbers; derive them from the data provided
-- For text documents, quote or paraphrase the most relevant passages as insights"""
+- For text documents, quote or paraphrase the most relevant passages as insights
+- If a source has a non-null "omitted_items" count, that many rows were dropped before you saw them.
+  Any total, average, or count over that source is a partial figure — say so in the insight
+  (e.g. "at least $X across the 60 rows shown; 240 more rows were not included")"""
 
 
 def _build_analysis_prompt(plan: list[str], retrieved_data: list[dict], question: str) -> str:
     steps = [p for p in plan if not p.startswith(("connectors:", "question_type:"))]
-    # Strip resource metadata — only send data rows to keep token count low
+    # Strip resource metadata — only send data rows to keep token count low.
+    # `omitted_items` is carried through so totals over a trimmed dataset are
+    # reported as partial rather than exact.
     compact_data = [
-        {"source": r.get("source"), "data": r.get("data"), "error": r.get("error")}
+        {
+            "source": r.get("source"),
+            "data": r.get("data"),
+            "error": r.get("error"),
+            "omitted_items": r.get("omitted_items"),
+        }
         for r in retrieved_data
     ]
     return (

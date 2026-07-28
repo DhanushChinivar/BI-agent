@@ -22,6 +22,7 @@ from app.graph.nodes.analyst import analyst_node
 from app.graph.nodes.planner import planner_node
 from app.graph.nodes.retriever import retriever_node
 from app.graph.nodes.summarizer import _SYSTEM as SUMMARIZER_SYSTEM
+from app.graph.nodes.summarizer import build_prompt as build_summarizer_prompt
 from app.graph.state import AgentState
 from app.llm import chat as llm_chat
 from app.llm import stream as llm_stream
@@ -149,22 +150,7 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
     yield _sse("stage", {"stage": "summarizing", "message": "Writing your answer…"})
 
     analysis = state.get("analysis", {})
-    sources = [
-        item["source"]
-        for item in retrieved_data
-        if not item.get("connector_error") and "source" in item
-    ]
-    sources_section = f"\n\nActive data sources: {sources}" if sources else "\n\nActive data sources: none"
-
-    prompt = (
-        f"User question: {req.message}\n\n"
-        f"Analysis results:\n"
-        f"Insights: {analysis.get('insights', [])}\n"
-        f"Metrics: {analysis.get('metrics', {})}\n"
-        f"Trends: {analysis.get('trends', [])}\n"
-        f"Anomalies: {analysis.get('anomalies', [])}"
-        f"{sources_section}"
-    )
+    prompt = build_summarizer_prompt(req.message, analysis, retrieved_data)
 
     full_reply: list[str] = []
     async for chunk in llm_stream(

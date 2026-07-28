@@ -21,6 +21,37 @@ Guidelines:
 - Keep the total response under 300 words"""
 
 
+def build_prompt(question: str, analysis: dict, retrieved_data: list[dict]) -> str:
+    """Build the summarizer prompt.
+
+    Shared with the SSE path in `api/query.py`, which streams tokens itself
+    rather than calling this node. Keeping one builder stops the two copies
+    from drifting apart.
+    """
+    # One entry per resource read, so several sheets from one connector must
+    # collapse to a single source name. `connector_error` is the retriever's
+    # failure marker.
+    sources: list[str] = []
+    for item in retrieved_data:
+        name = item.get("source")
+        if name and not item.get("connector_error") and name not in sources:
+            sources.append(name)
+
+    sources_section = (
+        f"\n\nActive data sources: {sources}" if sources else "\n\nActive data sources: none"
+    )
+
+    return (
+        f"User question: {question}\n\n"
+        f"Analysis results:\n"
+        f"Insights: {analysis.get('insights', [])}\n"
+        f"Metrics: {analysis.get('metrics', {})}\n"
+        f"Trends: {analysis.get('trends', [])}\n"
+        f"Anomalies: {analysis.get('anomalies', [])}"
+        f"{sources_section}"
+    )
+
+
 async def summarizer_node(state: AgentState) -> dict:
     t0 = time.monotonic()
     bound = log.bind(
@@ -30,23 +61,10 @@ async def summarizer_node(state: AgentState) -> dict:
     )
 
     messages = state.get("messages", [])
-    analysis = state.get("analysis", {})
-    retrieved_data = state.get("retrieved_data", [])
-
     user_question = last_human_message(messages) or "Summarize the analysis."
+    analysis = state.get("analysis", {})
 
-    sources = [item["source"] for item in retrieved_data if "error" not in item and "source" in item]
-    sources_section = f"\n\nActive data sources: {sources}" if sources else "\n\nActive data sources: none"
-
-    prompt = (
-        f"User question: {user_question}\n\n"
-        f"Analysis results:\n"
-        f"Insights: {analysis.get('insights', [])}\n"
-        f"Metrics: {analysis.get('metrics', {})}\n"
-        f"Trends: {analysis.get('trends', [])}\n"
-        f"Anomalies: {analysis.get('anomalies', [])}"
-        f"{sources_section}"
-    )
+    prompt = build_prompt(user_question, analysis, state.get("retrieved_data", []))
 
     chunks: list[str] = []
     try:

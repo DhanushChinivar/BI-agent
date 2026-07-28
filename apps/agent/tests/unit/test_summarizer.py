@@ -1,24 +1,48 @@
 """Unit tests for the summarizer node."""
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from app.graph.nodes.summarizer import _text_content_from_retrieved, summarizer_node
+from app.graph.nodes.summarizer import build_prompt, summarizer_node
+
+# `_text_content_from_retrieved` was removed in fcc50fa along with the
+# CSV/Excel/PDF upload connector it served; its tests went with it.
 
 
-def test_text_content_from_retrieved_extracts_plain_text():
+def test_build_prompt_lists_each_source_once():
+    """Three sheets from one connector is one source, not three."""
     retrieved = [
-        {"source": "csv_upload", "data": {"rows": [{"content": "Q4 revenue was $1.2M"}]}},
-        {"source": "google_sheets", "data": {"rows": [{"revenue": 1200000, "region": "APAC"}]}},
+        {"source": "google_sheets", "data": {"rows": []}},
+        {"source": "google_sheets", "data": {"rows": []}},
+        {"source": "gmail", "data": {"messages": []}},
     ]
-    text = _text_content_from_retrieved(retrieved)
-    assert "Q4 revenue was $1.2M" in text
-    # Tabular row (two keys) should NOT appear
-    assert "APAC" not in text
+    prompt = build_prompt("q", {}, retrieved)
+    assert "['google_sheets', 'gmail']" in prompt
 
 
-def test_text_content_from_retrieved_empty():
-    assert _text_content_from_retrieved([]) == ""
+def test_build_prompt_excludes_failed_connectors():
+    retrieved = [
+        {"source": "gmail", "error": "token expired", "connector_error": True},
+        {"source": "google_sheets", "data": {"rows": []}},
+    ]
+    prompt = build_prompt("q", {}, retrieved)
+    assert "gmail" not in prompt
+    assert "google_sheets" in prompt
+
+
+def test_build_prompt_handles_no_sources():
+    assert "Active data sources: none" in build_prompt("q", {}, [])
+
+
+def test_streaming_path_uses_the_same_prompt_builder():
+    """The SSE endpoint streams tokens itself instead of calling summarizer_node.
+
+    It must not rebuild the prompt inline — the two copies drifted before
+    (`"error" not in item` vs `connector_error`), so pin them to one builder.
+    """
+    from app.api import query
+
+    assert query.build_summarizer_prompt is build_prompt
 
 
 @pytest.mark.asyncio
