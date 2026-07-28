@@ -128,6 +128,7 @@ uv run pytest tests/evals/ -v --timeout=120
 
 ## Docs
 
+- [`docs/DATAFLOW.md`](docs/DATAFLOW.md) — Step-by-step trace of every operation: auth, OAuth, query pipeline, billing, scheduling
 - [`docs/PLAN.md`](docs/PLAN.md) — Phase-by-phase plan, current status, and remaining work
 - [`docs/diagrams/architecture.md`](docs/diagrams/architecture.md) — Mermaid architecture diagram, trust boundaries, known gaps
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records

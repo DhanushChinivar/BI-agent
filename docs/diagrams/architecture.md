@@ -137,8 +137,12 @@ graph TD
 | Stripe → agent | Stripe signature verification using `STRIPE_WEBHOOK_SECRET` |
 | Production startup | `Settings._require_secure_secrets_in_production` refuses to boot if `CREDENTIAL_ENCRYPTION_KEY`, `WEBHOOK_SECRET`, or `MCP_SERVICE_SECRET` is missing or still the committed dev default |
 
+> For a step-by-step trace of each operation through these components — including the
+> exact call order, cache lookups, and failure paths — see [`docs/DATAFLOW.md`](../DATAFLOW.md).
+
 ## Known Architectural Gaps
 
 - **No RAG.** `retriever_node` reads every resource a connector exposes and keeps the rows with the highest keyword overlap (cap: 60 rows / 15 text chunks). There is no ingest step, no chunking, no embedding, no vector store, and no citations. See Phase 10 in [`docs/PLAN.md`](../PLAN.md).
 - **OAuth state is in-process.** `app/api/oauth.py` holds pending flows in a module-level dict, so it does not survive a restart and breaks with more than one worker. Needs Redis before any multi-instance deploy.
 - **No CI and no deployment.** There is no `.github/` directory and no hosting target configured.
+- **`AuthMiddleware` blanket-401s unauthenticated routes in production.** It has no exempt-path set, so with `APP_ENV=production` the OAuth callbacks, Stripe webhook, n8n webhook, `/health`, and `/metrics` all return 401 before their own signature checks run. Verified, with the full table, in [`docs/DATAFLOW.md`](../DATAFLOW.md#11-known-breaks-in-production).
