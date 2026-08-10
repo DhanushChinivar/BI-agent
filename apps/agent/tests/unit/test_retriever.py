@@ -32,6 +32,40 @@ def connector_search():
         yield search
 
 
+@pytest.fixture(autouse=True)
+def cold_cache():
+    """The connector cache misses unless a test says otherwise.
+
+    Not optional hygiene: `cache_get` talks to a real Redis at REDIS_URL, so
+    with the dev stack running these tests read whatever a previous test — or a
+    previous *run* — happened to leave there. That surfaced as a test which
+    passed alone and failed in the suite, which is the worst way to find out.
+    Tests that are actually about caching patch over this.
+    """
+    with (
+        patch("app.graph.nodes.retriever.cache_get", new_callable=AsyncMock, return_value=None),
+        patch("app.graph.nodes.retriever.cache_set", new_callable=AsyncMock),
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def vector_index():
+    """The vector index is empty unless a test says otherwise.
+
+    Made explicit for the same reason as `connector_search`: with no
+    VOYAGE_API_KEY in the environment `rag_search` returns [] on its own, so
+    every connector test below would pass while the vector branch was never
+    evaluated at all — green for a reason unrelated to what it claims to check.
+    """
+    with patch(
+        "app.graph.nodes.retriever.rag_search",
+        new_callable=AsyncMock,
+        return_value=[],
+    ) as rag:
+        yield rag
+
+
 def test_parse_plan_meta_extracts_connectors():
     plan = ["question_type:aggregation", "connectors:google_sheets,gmail", "retrieve data"]
     connectors, question_type = _parse_plan_meta(plan)
@@ -434,3 +468,155 @@ def test_trim_caps_every_payload_not_just_the_first():
     assert len(trimmed["content"]) <= retriever._MAX_TEXT_CHARS
     # 10 rows plus every paragraph that did not fit — both halves counted.
     assert dropped == 10 + (40 - kept_paragraphs)
+
+
+# ── vector retrieval ──────────────────────────────────────────────────────────
+
+def _chunk_hit(connector, resource_id, title, idx, score, text):
+    return {
+        "connector": connector,
+        "resource_id": resource_id,
+        "resource_title": title,
+        "chunk_index": idx,
+        "content": text,
+        "distance": (1.0 - score) * 2,
+        "score": score,
+    }
+
+
+@pytest.mark.asyncio
+async def test_text_connectors_answer_from_the_index(vector_index):
+    """The point of the whole feature: Gmail is answered from vectors, with no
+    live connector round trip at all."""
+    vector_index.return_value = [
+        _chunk_hit("gmail", "t1", "Runway discussion", 0, 0.91, "We have 18 months of runway."),
+    ]
+
+    with patch(
+        "app.graph.nodes.retriever.mcp_client.read", new_callable=AsyncMock
+    ) as read:
+        result = await retriever_node({
+            "plan": ["connectors:gmail", "question_type:lookup"],
+            "user_id": "u1",
+            "messages": [{"role": "human", "content": "How much runway do we have?"}],
+        })
+
+    read.assert_not_awaited()
+    entry = result["retrieved_data"][0]
+    assert entry["source"] == "gmail"
+    assert entry["retrieval"] == "vector"
+    assert "18 months of runway" in entry["data"]["passages"][0]
+
+
+@pytest.mark.asyncio
+async def test_vector_entries_carry_a_citation(vector_index):
+    """A BI answer that cannot say where a figure came from is not usable."""
+    vector_index.return_value = [
+        _chunk_hit("notion", "p1", "FY25 Plan", 2, 0.8, "Target is 4.2M."),
+    ]
+
+    result = await retriever_node({
+        "plan": ["connectors:notion"],
+        "user_id": "u1",
+        "messages": [{"role": "human", "content": "What is the FY25 target?"}],
+    })
+
+    citation = result["retrieved_data"][0]["data"]["citation"]
+    assert citation == {"connector": "notion", "resource_id": "p1", "title": "FY25 Plan"}
+
+
+@pytest.mark.asyncio
+async def test_an_empty_index_falls_back_to_the_live_connector(vector_index):
+    """A cold index must degrade to provider search, not return nothing."""
+    vector_index.return_value = []
+
+    with patch(
+        "app.graph.nodes.retriever.mcp_client.list_resources",
+        new_callable=AsyncMock,
+        return_value=[{"id": "t1", "title": "Runway"}],
+    ), patch(
+        "app.graph.nodes.retriever.mcp_client.read",
+        new_callable=AsyncMock,
+        return_value={"messages": [{"body": "18 months", "subject": "Runway"}]},
+    ) as read:
+        result = await retriever_node({
+            "plan": ["connectors:gmail"],
+            "user_id": "u1",
+            "messages": [{"role": "human", "content": "How much runway?"}],
+        })
+
+    read.assert_awaited()
+    assert result["retrieved_data"][0]["source"] == "gmail"
+
+
+@pytest.mark.asyncio
+async def test_spreadsheets_never_go_through_the_index(vector_index):
+    """"What was Q4 revenue?" needs an exact sum over every row. Routing it to
+    nearest-neighbour lookup would answer a different question convincingly."""
+    with patch(
+        "app.graph.nodes.retriever.mcp_client.list_resources",
+        new_callable=AsyncMock,
+        return_value=[{"id": "s1", "title": "Q4 Sales"}],
+    ), patch(
+        "app.graph.nodes.retriever.mcp_client.read",
+        new_callable=AsyncMock,
+        return_value={"rows": [{"revenue": "100"}]},
+    ):
+        result = await retriever_node({
+            "plan": ["connectors:google_sheets", "question_type:aggregation"],
+            "user_id": "u1",
+            "messages": [{"role": "human", "content": "What was our Q4 revenue?"}],
+        })
+
+    vector_index.assert_not_awaited()
+    assert result["retrieved_data"][0]["data"] == {"rows": [{"revenue": "100"}]}
+
+
+@pytest.mark.asyncio
+async def test_a_vector_store_failure_does_not_fail_the_question(vector_index):
+    vector_index.side_effect = RuntimeError("pgvector unreachable")
+
+    with patch(
+        "app.graph.nodes.retriever.mcp_client.list_resources",
+        new_callable=AsyncMock,
+        return_value=[{"id": "t1", "title": "Runway"}],
+    ), patch(
+        "app.graph.nodes.retriever.mcp_client.read",
+        new_callable=AsyncMock,
+        return_value={"messages": [{"body": "18 months", "subject": "Runway"}]},
+    ):
+        result = await retriever_node({
+            "plan": ["connectors:gmail"],
+            "user_id": "u1",
+            "messages": [{"role": "human", "content": "How much runway?"}],
+        })
+
+    assert result["retrieved_data"][0]["source"] == "gmail"
+    assert "error" not in result["retrieved_data"][0]
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_question_uses_both_paths(vector_index):
+    """Sheets through SQL, Gmail through vectors, in one question."""
+    vector_index.return_value = [
+        _chunk_hit("gmail", "t1", "Budget thread", 0, 0.85, "Marketing asked for more."),
+    ]
+
+    with patch(
+        "app.graph.nodes.retriever.mcp_client.list_resources",
+        new_callable=AsyncMock,
+        return_value=[{"id": "s1", "title": "Q4 Sales"}],
+    ), patch(
+        "app.graph.nodes.retriever.mcp_client.read",
+        new_callable=AsyncMock,
+        return_value={"rows": [{"revenue": "100"}]},
+    ):
+        result = await retriever_node({
+            "plan": ["connectors:google_sheets,gmail"],
+            "user_id": "u1",
+            "messages": [{"role": "human", "content": "Why did Q4 revenue miss budget?"}],
+        })
+
+    by_source = {e["source"]: e for e in result["retrieved_data"]}
+    assert by_source["gmail"]["retrieval"] == "vector"
+    assert "rows" in by_source["google_sheets"]["data"]

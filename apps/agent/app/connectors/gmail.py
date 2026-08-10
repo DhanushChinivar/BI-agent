@@ -73,6 +73,10 @@ class GmailConnector:
             headers = first_msg.get("payload", {}).get("headers", [])
             resources.append({
                 "id": thread["id"],
+                # Gmail bumps historyId whenever a thread changes, which is what
+                # lets the RAG index skip an unchanged mailbox instead of
+                # re-embedding all of it on every sync.
+                "historyId": str(t.get("historyId") or thread.get("historyId") or ""),
                 "title": _header(headers, "Subject") or "(no subject)",
                 "from": _header(headers, "From"),
                 "date": _header(headers, "Date"),

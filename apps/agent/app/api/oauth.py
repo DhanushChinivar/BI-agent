@@ -5,7 +5,7 @@ import logging
 import secrets
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
 from redis.exceptions import RedisError
@@ -14,6 +14,8 @@ from app.cache import oauth_state_put, oauth_state_take
 from app.config.settings import get_settings
 from app.db.crud import upsert_credentials
 from app.db.engine import get_session_factory
+from app.rag import TEXT_CONNECTORS
+from app.rag.ingest import sync_connector
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/oauth", tags=["oauth"])
@@ -44,11 +46,46 @@ async def _take_state(state: str, connector: str) -> dict:
         # Fail closed and say so. Swallowing this would turn a cache outage into
         # "invalid state", sending the user round the authorise loop forever.
         logger.error("OAuth state store unavailable: %s", exc)
-        raise HTTPException(status_code=503, detail="Authorization store unavailable")
+        raise HTTPException(
+            status_code=503, detail="Authorization store unavailable"
+        ) from exc
 
     if not meta or meta.get("connector") != connector:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
     return meta
+
+
+def _schedule_backfill(background: BackgroundTasks, user_id: str, connector: str) -> None:
+    """Index a newly authorised connector, after the redirect has been sent.
+
+    Backgrounded because the user is mid-OAuth: a mailbox backfill is thousands
+    of embeddings and tens of seconds, and holding the callback open for it
+    would leave them staring at a hung browser tab before they ever reach the
+    app. Until it finishes the retriever falls back to live provider search, so
+    the only cost of the delay is a slower first question.
+    """
+    if connector in TEXT_CONNECTORS:
+        background.add_task(sync_connector, user_id, connector)
+
+
+def _google_pending(user_id: str, connector: str, flow: Flow) -> dict:
+    """What a Google OAuth flow must remember across the redirect.
+
+    `code_verifier` is the important one. `Flow.authorization_url()` generates a
+    PKCE verifier on the instance and sends only its hash to Google;
+    `fetch_token` then has to present the original. The `Flow` object itself
+    holds a live session and is not serialisable, so the verifier is carried
+    here and reattached to a rebuilt Flow in the callback.
+
+    Getting this wrong fails late and confusingly: Google returns
+    `invalid_grant: Missing code verifier` from the token exchange, well after
+    the user has already approved the consent screen.
+    """
+    return {
+        "user_id": user_id,
+        "connector": connector,
+        "code_verifier": flow.code_verifier,
+    }
 
 
 def _google_flow(redirect_uri: str, scopes: list[str]) -> Flow:
@@ -81,19 +118,22 @@ async def google_sheets_start(request: Request):
     auth_url, _ = flow.authorization_url(
         access_type="offline", include_granted_scopes="true", state=state, prompt="consent"
     )
-    await oauth_state_put(state, {"user_id": user_id, "connector": "google_sheets"})
+    await oauth_state_put(state, _google_pending(user_id, "google_sheets", flow))
     return RedirectResponse(auth_url)
 
 
 @router.get("/google-sheets/callback")
-async def google_sheets_callback(code: str = Query(...), state: str = Query(...)):
+async def google_sheets_callback(
+    background: BackgroundTasks, code: str = Query(...), state: str = Query(...)
+):
     meta = await _take_state(state, "google_sheets")
 
     settings = get_settings()
     # Rebuilt rather than carried across the redirect: a Flow holds a live
-    # session and is not serialisable, and it is fully determined by the
-    # redirect URI and scopes, which are config.
+    # session and is not serialisable. Everything it needs is either config
+    # (redirect URI, scopes) or was stashed with the state (`code_verifier`).
     flow = _google_flow(settings.google_sheets_redirect_uri, _GOOGLE_SHEETS_SCOPES)
+    flow.code_verifier = meta.get("code_verifier")
     # google-auth-oauthlib exchanges the code over a blocking socket; run it off
     # the event loop so one slow token endpoint does not stall every other request.
     await asyncio.to_thread(flow.fetch_token, code=code)
@@ -108,6 +148,7 @@ async def google_sheets_callback(code: str = Query(...), state: str = Query(...)
             "client_secret": settings.google_client_secret,
         })
 
+    _schedule_backfill(background, meta["user_id"], "google_sheets")
     return RedirectResponse(f"{settings.frontend_url}/connect?connected=google_sheets")
 
 
@@ -122,16 +163,19 @@ async def gmail_start(request: Request):
     auth_url, _ = flow.authorization_url(
         access_type="offline", include_granted_scopes="true", state=state, prompt="consent"
     )
-    await oauth_state_put(state, {"user_id": user_id, "connector": "gmail"})
+    await oauth_state_put(state, _google_pending(user_id, "gmail", flow))
     return RedirectResponse(auth_url)
 
 
 @router.get("/gmail/callback")
-async def gmail_callback(code: str = Query(...), state: str = Query(...)):
+async def gmail_callback(
+    background: BackgroundTasks, code: str = Query(...), state: str = Query(...)
+):
     meta = await _take_state(state, "gmail")
 
     settings = get_settings()
     flow = _google_flow(settings.google_gmail_redirect_uri, _GOOGLE_GMAIL_SCOPES)
+    flow.code_verifier = meta.get("code_verifier")
     # google-auth-oauthlib exchanges the code over a blocking socket; run it off
     # the event loop so one slow token endpoint does not stall every other request.
     await asyncio.to_thread(flow.fetch_token, code=code)
@@ -146,6 +190,7 @@ async def gmail_callback(code: str = Query(...), state: str = Query(...)):
             "client_secret": settings.google_client_secret,
         })
 
+    _schedule_backfill(background, meta["user_id"], "gmail")
     return RedirectResponse(f"{settings.frontend_url}/connect?connected=gmail")
 
 
@@ -171,7 +216,9 @@ async def notion_start(request: Request):
 
 
 @router.get("/notion/callback")
-async def notion_callback(code: str = Query(...), state: str = Query(...)):
+async def notion_callback(
+    background: BackgroundTasks, code: str = Query(...), state: str = Query(...)
+):
     meta = await _take_state(state, "notion")
 
     settings = get_settings()
@@ -186,7 +233,11 @@ async def notion_callback(code: str = Query(...), state: str = Query(...)):
                 "Authorization": f"Basic {credentials}",
                 "Content-Type": "application/json",
             },
-            json={"grant_type": "authorization_code", "code": code, "redirect_uri": settings.notion_redirect_uri},
+            json={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": settings.notion_redirect_uri,
+            },
         )
 
     if resp.status_code != 200:
@@ -202,5 +253,6 @@ async def notion_callback(code: str = Query(...), state: str = Query(...)):
             "workspace_name": data.get("workspace_name", ""),
         })
 
+    _schedule_backfill(background, meta["user_id"], "notion")
     return RedirectResponse(f"{settings.frontend_url}/connect?connected=notion")
 

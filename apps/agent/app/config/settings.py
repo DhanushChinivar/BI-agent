@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     # model ran depended on whether a .env file happened to be present.
     llm_model: str = Field(default="claude-sonnet-5")
 
+    # Embeddings (RAG). Anthropic sells no embedding model; Voyage is its
+    # recommended partner. Empty key disables indexing and search, and the
+    # retriever falls back to the provider-search path — degraded, not broken.
+    voyage_api_key: str = Field(default="")
+    embedding_model: str = Field(default="voyage-3-lite")
+
     # Database
     database_url: str = Field(default="postgresql+asyncpg://localhost/biagent")
 

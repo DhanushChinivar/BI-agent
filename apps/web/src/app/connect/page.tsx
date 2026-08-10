@@ -10,6 +10,10 @@ interface ConnectorStatus {
   last_updated: string | null;
 }
 
+// Clerk normally resolves in well under a second; this only fires when it is
+// never going to resolve at all.
+const AUTH_TIMEOUT_MS = 5000;
+
 const CONNECTOR_META: Record<string, { label: string; description: string; color: string }> = {
   google_sheets: {
     label: "Google Sheets",
@@ -32,18 +36,57 @@ function ConnectPageInner() {
   const { user, isLoaded } = useUser();
   const [statuses, setStatuses] = useState<ConnectorStatus[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const searchParams = useSearchParams();
   const justConnected = searchParams.get("connected");
 
   useEffect(() => {
-    if (!isLoaded) return;
+    // Deliberately not `if (!isLoaded) return` with no fallback: when Clerk has
+    // no publishable key — which happens if NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+    // was missing at *build* time, since `next build` inlines it — `isLoaded`
+    // stays false forever and this page hung on "Loading…" with nothing in the
+    // console and no failed request to inspect. Time out and say so instead.
+    if (!isLoaded) {
+      const timer = setTimeout(() => {
+        setLoading(false);
+        setError(
+          "Could not initialise authentication. If you are running locally, the web " +
+            "image was probably built without NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY — " +
+            "rebuild with `make build`.",
+        );
+      }, AUTH_TIMEOUT_MS);
+      return () => clearTimeout(timer);
+    }
+
     // No user_id param: the agent reads the identity from the verified Clerk
     // JWT the BFF injects. Passing one is ignored, and inviting it back would
     // reintroduce the Phase 9 identity-spoofing hole.
+    let cancelled = false;
     fetch(`/api/agent/v1/connectors/status`)
-      .then((r) => r.json())
-      .then((data) => setStatuses(data.connectors ?? []))
-      .finally(() => setLoading(false));
+      .then((r) => {
+        if (!r.ok) throw new Error(`Agent returned ${r.status}`);
+        return r.json();
+      })
+      .then((data) => {
+        if (!cancelled) {
+          setStatuses(data.connectors ?? []);
+          setError(null);
+        }
+      })
+      .catch((e: unknown) => {
+        // A silent catch here is how a dead agent looks identical to an account
+        // with no connectors.
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Could not reach the agent.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [justConnected, isLoaded, user?.id]);
 
   const disconnect = async (name: string) => {
@@ -67,6 +110,12 @@ function ConnectPageInner() {
         {justConnected && (
           <div className="mb-6 px-4 py-3 rounded-xl bg-green-900/30 border border-green-700 text-green-300 text-sm">
             Successfully connected {CONNECTOR_META[justConnected]?.label ?? justConnected}.
+          </div>
+        )}
+
+        {error && (
+          <div className="mb-6 px-4 py-3 rounded-xl bg-red-950/40 border border-red-800 text-red-300 text-sm">
+            {error}
           </div>
         )}
 

@@ -18,6 +18,7 @@ export default function Home() {
   const bottomRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -38,11 +39,13 @@ export default function Home() {
   async function fetchConversations() {
     try {
       const res = await fetch("/api/agent/v1/conversations");
-      if (res.ok) {
-        setConversations(await res.json());
-      }
+      if (!res.ok) throw new Error(String(res.status));
+      setConversations(await res.json());
+      setListError(null);
     } catch {
-      // sidebar list is non-critical
+      // The list is non-critical, but silence made an unreachable agent look
+      // identical to an account with no history.
+      setListError("Could not load conversations.");
     }
   }
 
@@ -51,7 +54,11 @@ export default function Home() {
     setLoadingHistory(true);
     try {
       const res = await fetch(`/api/agent/v1/conversations/${id}/messages`);
-      if (res.ok) {
+      if (!res.ok) {
+        // Without this the click silently did nothing and left the previous
+        // conversation on screen, still highlighted as if it had switched.
+        setListError("Could not open that conversation.");
+      } else {
         const raw: { role: string; content: string }[] = await res.json();
         const history: Message[] = raw.map((m) => ({
           role: m.role as "user" | "assistant",
@@ -67,9 +74,17 @@ export default function Home() {
 
   async function deleteConversation(id: string, e: React.MouseEvent) {
     e.stopPropagation();
-    await fetch(`/api/agent/v1/conversations/${id}`, { method: "DELETE" });
-    setConversations((prev) => prev.filter((c) => c.id !== id));
-    if (activeConversationId === id) reset();
+    // The response was never checked, so a failed delete still removed the row
+    // from the sidebar — the conversation reappeared on the next reload, which
+    // reads as data loss and then resurrection rather than as an error.
+    try {
+      const res = await fetch(`/api/agent/v1/conversations/${id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(String(res.status));
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      if (activeConversationId === id) reset();
+    } catch {
+      setListError("Could not delete that conversation.");
+    }
   }
 
   return (
@@ -91,6 +106,11 @@ export default function Home() {
 
         {/* Conversation history list */}
         <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-0.5">
+          {listError && (
+            <p className="px-3 py-2 text-xs text-red-400 border border-red-900/60 rounded-lg mb-1">
+              {listError}
+            </p>
+          )}
           {conversations.map((conv) => (
             <div
               key={conv.id}

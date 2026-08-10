@@ -152,3 +152,77 @@ async def test_search_returns_readable_resources(drive):
             "modified": "2026-01-01",
         }
     ]
+
+
+# ── change signals for incremental indexing ───────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_gmail_listing_carries_a_history_id(monkeypatch):
+    """`indexed_resources.revision` skips unchanged resources. Without a real
+    signal it falls back to the title, so an edited thread keeps stale vectors
+    until someone renames it — the index goes quietly wrong, not loudly."""
+    from app.connectors import gmail
+
+    service = MagicMock()
+    threads = service.users.return_value.threads.return_value
+    threads.list.return_value.execute.return_value = {"threads": [{"id": "t1"}]}
+    threads.get.return_value.execute.return_value = {
+        "historyId": "998877",
+        "messages": [{"payload": {"headers": [{"name": "Subject", "value": "Q4"}]}}],
+    }
+    monkeypatch.setattr(gmail, "build", lambda *a, **k: service)
+    monkeypatch.setattr(gmail, "get_google_credentials", AsyncMock(return_value=object()))
+    monkeypatch.setattr(gmail.GmailConnector, "_creds", AsyncMock(return_value={}))
+
+    resources = await gmail.GmailConnector().list_resources("u1")
+
+    assert resources[0]["historyId"] == "998877"
+
+
+@pytest.mark.asyncio
+async def test_notion_listing_carries_last_edited_time(monkeypatch):
+    from app.connectors import notion
+
+    page = {
+        "id": "p1",
+        "url": "https://notion.so/p1",
+        "last_edited_time": "2026-08-10T09:00:00.000Z",
+        "properties": {"title": {"type": "title", "title": [{"plain_text": "Roadmap"}]}},
+    }
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"results": [page]}
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def post(self, *a, **k):
+            return _Resp()
+
+    monkeypatch.setattr(notion.NotionConnector, "_token", AsyncMock(return_value="t"))
+    monkeypatch.setattr(notion.NotionConnector, "_client", lambda self, token: _Client())
+
+    resources = await notion.NotionConnector().list_resources("u1")
+
+    assert resources[0]["last_edited_time"] == "2026-08-10T09:00:00.000Z"
+
+
+def test_revision_prefers_a_real_signal_over_the_title_fallback():
+    """Ties the connector fields above to the ingest logic that consumes them."""
+    from app.rag.ingest import _revision
+
+    gmail_resource = {"id": "t1", "title": "Q4", "historyId": "998877"}
+    notion_resource = {"id": "p1", "title": "Roadmap", "last_edited_time": "2026-08-10"}
+
+    assert _revision(gmail_resource) == "998877"
+    assert _revision(notion_resource) == "2026-08-10"
+    # Only when neither is present does it degrade to the title.
+    assert _revision({"id": "x", "title": "Roadmap"}) == "title:Roadmap"

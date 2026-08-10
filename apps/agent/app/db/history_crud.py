@@ -1,5 +1,5 @@
 """CRUD helpers for conversation history."""
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,7 +44,7 @@ async def list_conversations(session: AsyncSession, user_id: str) -> list[Conver
 async def touch_conversation(session: AsyncSession, conversation_id: str) -> None:
     conv = await session.get(Conversation, conversation_id)
     if conv:
-        conv.updated_at = datetime.now(timezone.utc)
+        conv.updated_at = datetime.now(UTC)
         await session.commit()
 
 

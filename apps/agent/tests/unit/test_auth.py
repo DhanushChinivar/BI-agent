@@ -11,6 +11,7 @@ had coverage:
 """
 import base64
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -394,3 +395,83 @@ def test_issuer_normalises_the_configured_host(monkeypatch, configured, expected
         assert auth._issuer() == expected
     finally:
         get_settings.cache_clear()
+
+
+# ── OAuth PKCE round trip ─────────────────────────────────────────────────────
+
+def test_start_persists_the_pkce_code_verifier():
+    """The regression this pins.
+
+    Moving OAuth state to Redis stopped storing the `Flow` and rebuilt it in the
+    callback, on the reasoning that a Flow is "fully determined by the redirect
+    URI and scopes". It is not: `authorization_url()` generates a PKCE verifier
+    on the instance and sends only its hash to Google, and `fetch_token` must
+    present the original. Losing it fails *after* the user has approved consent,
+    with `invalid_grant: Missing code verifier` — about as late and as confusing
+    as an OAuth failure can be.
+    """
+    from types import SimpleNamespace
+
+    from app.api.oauth import _google_pending
+
+    flow = SimpleNamespace(code_verifier="verifier-generated-at-start")
+
+    assert _google_pending("u1", "gmail", flow) == {
+        "user_id": "u1",
+        "connector": "gmail",
+        "code_verifier": "verifier-generated-at-start",
+    }
+
+
+@pytest.mark.asyncio
+async def test_the_callback_reattaches_the_verifier_before_exchanging(prod_client):
+    """End to end through the route: whatever /start stored must be on the Flow
+    that calls fetch_token."""
+    from app.api import oauth
+
+    seen: dict = {}
+
+    class _Flow:
+        code_verifier = None
+
+        def fetch_token(self, code):
+            seen["verifier"] = self.code_verifier
+            seen["code"] = code
+
+        @property
+        def credentials(self):
+            return SimpleNamespace(token="at", refresh_token="rt")
+
+    with (
+        patch.object(oauth, "_google_flow", lambda *a, **k: _Flow()),
+        patch.object(
+            oauth,
+            "oauth_state_take",
+            new_callable=AsyncMock,
+            return_value={
+                "user_id": "u1",
+                "connector": "gmail",
+                "code_verifier": "the-original-verifier",
+            },
+        ),
+        patch.object(oauth, "upsert_credentials", new_callable=AsyncMock),
+        patch.object(oauth, "get_session_factory", lambda: _null_session_factory()),
+        patch.object(oauth, "sync_connector", new_callable=AsyncMock),
+    ):
+        prod_client.get(
+            "/v1/oauth/gmail/callback?code=auth-code&state=s1", follow_redirects=False
+        )
+
+    assert seen["verifier"] == "the-original-verifier"
+    assert seen["code"] == "auth-code"
+
+
+def _null_session_factory():
+    class _Ctx:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *_):
+            return False
+
+    return lambda: _Ctx()

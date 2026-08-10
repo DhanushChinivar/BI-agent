@@ -18,13 +18,17 @@
 | 7 | Polish (tests, evals, observability, docs) | ✅ Complete |
 | 8 | MCP connector migration | ✅ Complete |
 | 9 | Security hardening | ✅ Complete |
-| 10 | RAG retrieval layer | ❌ Not started — **the main remaining gap** |
+| 10 | RAG retrieval layer | ✅ Complete for text sources (Gmail, Notion) |
 | 11 | CI + production deploy | ❌ Not started |
 
-> **Honest framing:** the README describes a "RAG chatbot", but there is no
-> retrieval-augmented generation in the codebase yet — no embeddings, no vector
-> store, no chunking. `retriever_node` fetches whole resources and truncates them
-> by keyword overlap. Phase 10 is what makes the RAG claim true.
+> **Honest framing:** the RAG claim is now true for unstructured sources.
+> Gmail threads and Notion pages are chunked, embedded with `voyage-3-lite`, and
+> stored in pgvector; `retriever_node` answers questions about them by vector
+> similarity and returns citations. It is deliberately *not* true for
+> spreadsheets: "what was Q4 revenue?" needs an exact sum over every row, so
+> tabular sources stay on the provider-search → read → `compute_node` path. What
+> is still missing is reranking, retrieval evals (recall@k), and rendering the
+> citations in the UI.
 
 ---
 
@@ -337,20 +341,42 @@ development defaults from silently reaching production.
 
 ---
 
-## Phase 10 — RAG Retrieval Layer ❌ NOT STARTED
+## Phase 10 — RAG Retrieval Layer ✅ COMPLETE (text sources)
 
-> **This is the largest remaining gap.** The project is described as a RAG chatbot
-> but performs no retrieval-augmented generation. There are no embeddings, no vector
-> store, and no chunking anywhere in the codebase.
+### What it replaced
+`retriever_node` called `<connector>_list_resources`, `_read` every resource, then kept
+rows whose string form shared the most word-tokens with the question. That is lexical
+truncation: it did not scale past a few resources, missed any match that shared no
+words with the question, and silently dropped data.
 
-### Current behaviour
-`retriever_node` calls `<connector>_list_resources`, then `_read`s **every** resource,
-then keeps rows whose string form shares the most word-tokens with the question —
-capped at `_MAX_ROWS = 60` / `_MAX_TEXT_CHUNKS = 15`. That is lexical truncation:
-it does not scale past a few resources, misses semantic matches, and silently drops
-data with no indication to the user.
+### Completed Tasks
+- [x] **Vector store** — `pgvector` in the existing Postgres (no new service);
+      `document_chunks` with an **HNSW** index on `vector_cosine_ops`, scoped by
+      `user_id`. HNSW rather than IVFFlat because IVFFlat needs a populated table to
+      build meaningful lists, and this one is created empty (migration `0005`)
+- [x] **Embeddings** — `voyage-3-lite` (512 dims), batched at ingest, never per query.
+      `input_type` is `document` on ingest and `query` at search: Voyage's models are
+      asymmetric and using one type for both measurably degrades recall. The model id
+      is stored per chunk, so a model change invalidates the vectors even when the
+      content has not changed
+- [x] **Chunking** (`app/rag/chunking.py`) — Gmail splits per message with quoted reply
+      history stripped; Notion packs paragraphs. Every chunk is prefixed with its
+      source's title and sender, because a retrieved fragment is read alone
+- [x] **Ingestion** — backfill on OAuth callback (backgrounded, so the user is not
+      held on the redirect), incremental resync on the ticker
+- [x] **Incremental sync** — `indexed_resources.revision` tracks Gmail's `historyId`
+      and Notion's `last_edited_time`; unchanged resources are skipped
+- [x] **Structured vs. text split** — decided and enforced: `TEXT_CONNECTORS` is
+      `{gmail, notion}`, and Sheets never reaches the index
+- [x] **Citations** — every vector entry carries `{connector, resource_id, title}`
+- [x] **Index lifecycle** — dropped on disconnect, alongside the Redis cache
 
-### Tasks
+### Remaining
+- [ ] **Reranking** — hits are ordered by raw cosine distance with a 0.6 cut; a
+      cross-encoder rerank on the top-k would sharpen the ordering
+- [ ] **Retrieval evals** — recall@k against a labelled set, separate from answer evals
+- [ ] **Citations in the UI** — the data reaches the analyst; nothing renders it as a link
+- [ ] **Original tasks not yet done**
 - [ ] **Ingestion job** — pull connector resources on a schedule and on connect; normalize per source (sheet rows → records, Gmail threads → messages, Notion blocks → sections)
 - [ ] **Chunking** — size/overlap per content type; preserve `source`, `resource_id`, and row/message offset as metadata
 - [ ] **Vector store** — `pgvector` in the existing Postgres (no new service); `document_chunks` table with an ivfflat/hnsw index, scoped by `user_id`

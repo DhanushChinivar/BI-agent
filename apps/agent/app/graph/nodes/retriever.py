@@ -10,6 +10,9 @@ from app.cache import cache_get, cache_set
 from app.connectors import CONNECTOR_NAMES
 from app.graph.message_utils import last_human_message
 from app.graph.state import AgentState
+from app.rag import TEXT_CONNECTORS
+from app.rag.search import group_by_resource
+from app.rag.search import search as rag_search
 
 log = structlog.get_logger(__name__)
 
@@ -238,6 +241,57 @@ async def _candidates(connector: str, user_id: str, question: str, bound: Any) -
     return await mcp_client.list_resources(connector, user_id)
 
 
+async def _vector_hits(
+    user_id: str, question: str, connectors: list[str], bound: Any
+) -> list[dict[str, Any]]:
+    """Retrieved entries built from the vector index, one per source document.
+
+    Shaped like the connector entries beside them — `source`, `resource`,
+    `data` — so `compute_node` and `analyst_node` need no special case. The
+    difference is what `data` holds: passages the index chose, each with a
+    score, rather than a whole document trimmed by keyword overlap.
+    """
+    try:
+        hits = await rag_search(user_id, question, connectors)
+    except Exception as exc:
+        # A vector-store failure must not fail the question; the caller still
+        # has the live connector path.
+        bound.warning("vector_search_failed", error=str(exc))
+        return []
+
+    if not hits:
+        return []
+
+    grouped = group_by_resource(hits)
+    bound.info(
+        "vector_hit",
+        connectors=connectors,
+        chunks=len(hits),
+        documents=len(grouped),
+        best_score=grouped[0]["best_score"],
+    )
+
+    return [
+        {
+            "source": doc["connector"],
+            "resource": {"id": doc["resource_id"], "title": doc["title"]},
+            "retrieval": "vector",
+            "data": {
+                "passages": [p["text"] for p in doc["passages"]],
+                # Carried so the analyst can attribute a claim to a document
+                # rather than to "your email".
+                "citation": {
+                    "connector": doc["connector"],
+                    "resource_id": doc["resource_id"],
+                    "title": doc["title"],
+                },
+                "relevance": doc["best_score"],
+            },
+        }
+        for doc in grouped
+    ]
+
+
 def _parse_plan_meta(plan: list[str]) -> tuple[list[str], str]:
     """Extract connector names and question_type encoded by the planner."""
     connectors: list[str] = []
@@ -271,6 +325,20 @@ async def retriever_node(state: AgentState) -> dict:
     active = [c for c in connectors if c in CONNECTOR_NAMES] or [_DEFAULT_CONNECTOR]
 
     retrieved: list[dict[str, Any]] = []
+
+    # Text sources answer from the vector index; tabular sources do not. A
+    # question about a spreadsheet ("what was Q4 revenue?") needs an exact sum
+    # over every row, which nearest-neighbour lookup over embedded rows cannot
+    # give — those stay on the search → read → compute path below.
+    indexed = [c for c in active if c in TEXT_CONNECTORS]
+    if indexed:
+        hits = await _vector_hits(user_id, question, indexed, bound)
+        retrieved.extend(hits)
+        # Only fall back to fetching a text connector live if the index had
+        # nothing for it — a warm index makes the connector round trip pure cost.
+        answered = {entry["source"] for entry in hits}
+        active = [c for c in active if c not in answered]
+
     for name in active:
         try:
             resources = await _candidates(name, user_id, question, bound)

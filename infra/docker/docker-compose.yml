@@ -3,7 +3,11 @@
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector, not postgres:16-alpine: the RAG layer stores embeddings
+    # in this same database rather than adding a vector service, and the stock
+    # image has no `vector` extension to enable. Same PG major, so an existing
+    # pgdata volume carries over.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: biagent
       POSTGRES_PASSWORD: biagent
@@ -75,6 +79,13 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/web.Dockerfile
+      # Build-time only. `next build` inlines NEXT_PUBLIC_* into the client
+      # bundle, so the `env_file:` below — which applies at runtime — comes too
+      # late for anything the browser reads. The Makefile exports these from
+      # apps/web/.env.local before invoking compose.
+      args:
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}
+        NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY:-}
     ports:
       - "3000:3000"
     env_file:

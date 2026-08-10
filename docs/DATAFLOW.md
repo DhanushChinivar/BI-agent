@@ -47,20 +47,25 @@ request
 **AuthMiddleware** ([auth.py:44-62](../apps/agent/app/middleware/auth.py#L44-L62)):
 
 1. If the path is exempt (`_is_exempt`) → sets `user_id = "system"` and passes straight
-   through. Exempt: `/health`, `/metrics`, `/v1/stripe/webhook`, `/v1/webhooks/n8n`, and
-   `/v1/oauth/*/callback`. Each of those authenticates by its own mechanism — OAuth
+   through. Exempt: `/health`, `/metrics`, `/v1/stripe/webhook`, `/v1/webhooks/n8n`,
+   `/v1/schedules/run-due`, `/v1/index/sync-due`, and `/v1/oauth/*/callback`. Each of those authenticates by its own mechanism — OAuth
    `state`, Stripe signature, HMAC — and never carries a JWT. **`/v1/oauth/*/start` is
    deliberately not exempt**: it binds the flow to an identity.
 2. Reads `Authorization: Bearer <token>`.
-3. If present → fetches Clerk's JWKS (cached via `@lru_cache`, so **key rotation needs a
-   service restart**), matches `kid`, verifies RS256, sets `request.state.user_id` from
-   the `sub` claim. Invalid token → **401**.
+3. If present → fetches Clerk's JWKS **asynchronously**, TTL-cached for an hour behind a
+   lock so a cold-cache burst issues one fetch rather than one per request. An
+   unrecognised `kid` refetches once, so key rotation no longer needs a restart. Verifies
+   RS256 **and the `iss` claim** against the configured Clerk origin. Invalid token →
+   **401**; Clerk unreachable → **503**, because that is our outage, not a bad token.
 4. If absent and `APP_ENV=production` → **401**.
 5. If absent otherwise → dev fallback: trusts the `X-User-Id` header, else `anonymous`.
 
-> The JWT signature is verified, but **no `audience` or `issuer` claim is checked**
-> ([auth.py](../apps/agent/app/middleware/auth.py)) — any token minted by the configured
-> Clerk instance is accepted regardless of what it was issued for.
+> `iss` is always verified: a signature alone only proves *some* Clerk-signed token, and
+> without it a token from a different Clerk instance verifies here and its `sub` becomes a
+> user id in our database. `aud` is opt-in via `CLERK_JWT_AUDIENCE`, because default Clerk
+> session tokens carry no `aud` and demanding one would reject every request. Note that
+> python-jose accepts a token with *no* `aud` even when an audience is configured, so
+> presence is checked explicitly.
 
 > Every downstream handler reads `request.state.user_id` and **never** a `user_id` query
 > param. That was the Phase 9 identity-spoofing fix — a query param would let any caller
@@ -71,8 +76,17 @@ only acts on `POST /v1/query` and `POST /v1/query/stream`. It calls `check_and_i
 which resets the daily counter on a date change, allows Pro unconditionally, and returns
 **402** for Free once `queries_today >= 3`.
 
-> ⚠️ **The counter increments before the pipeline runs.** A query that fails at the
-> connector, the LLM, or a timeout still consumes one of the three free daily queries.
+The counter increments **before** the pipeline runs — it has to, since the check is what
+decides whether the pipeline runs at all — and is **refunded** on failure: on a 5xx, on an
+unhandled exception, and, for the streaming path, from inside `_guarded_stream`. The
+streaming case needs its own handler because an SSE response is already `200` by the time
+the pipeline can fail, so the middleware cannot judge it by status code. A client
+disconnect is *not* refunded: the work was done and partly delivered.
+
+`/v1/webhooks/n8n` and `/v1/schedules/run-due` run the same pipeline but cannot be metered
+here — both are auth-exempt, so at middleware time `user_id` is the placeholder `"system"`,
+and charging that would bill every user's scheduled reports to one shared counter. They
+charge the real user inside their handlers.
 
 ---
 
@@ -107,12 +121,12 @@ the others are identical in shape.
  1  ├── GET /start ──▶│               │                  │              │
  2  │                 ├─ + Bearer ───▶│                  │              │
  3  │                 │               ├─ user_id from verified JWT      │
- 4  │                 │               ├─ _pending[state] = {user, flow} │   in-memory!
+ 4  │                 │               ├─ Redis: oauth:state:<state>, 10-min TTL
  5  │◀──────────── 302 accounts.google.com ─────────────────────────────┤
  6  ├── consent screen ─────────────────────────────────────────────────▶│
  7  │◀── 302 /callback?code&state ──────────────────────────────────────┤
  8  ├── callback (NO Authorization header) ────────────▶│              │   401 in prod
- 9  │                 │               ├─ _pending.pop(state)  400 if unknown
+ 9  │                 │               ├─ GETDEL state (single-use)  400 if unknown
 10  │                 │               ├── exchange code for tokens ────▶│
 11  │                 │               ├─ upsert ────────▶│              │   Fernet-encrypted
 12  │◀───────── 302 /connect?connected=google_sheets ────┤              │
@@ -122,10 +136,14 @@ the others are identical in shape.
 
 1. `/start` binds the flow to the **verified** `user_id`, never a query param
    ([oauth.py:52-65](../apps/agent/app/api/oauth.py#L52-L65)).
-2. `state` is a 16-byte `secrets.token_urlsafe`, stored with the `Flow` object so the PKCE
-   verifier survives the round trip.
-3. The callback pops `state`; an unknown or expired value → **400 "Invalid or expired
-   OAuth state"**.
+2. `state` is a 16-byte `secrets.token_urlsafe`, stored in Redis with a 10-minute expiry.
+   The `Flow` is **not** stored — it holds a live session and is not serialisable, and it
+   is fully determined by the redirect URI and scopes, so the callback rebuilds it.
+3. The callback redeems `state` with **`GETDEL`**, making read-and-delete atomic so a
+   replayed callback cannot redeem the same state twice. Unknown or expired → **400**;
+   Redis unreachable → **503**, never "invalid state", which would send the user round the
+   consent loop forever. The connector is re-checked too: a state minted by `/gmail/start`
+   must not be redeemable at `/google-sheets/callback`.
 4. Tokens are written via `upsert_credentials` → `set_credentials`, which Fernet-encrypts
    the JSON blob ([models.py:35-38](../apps/agent/app/db/models.py#L35-L38)). The key is
    derived from `CREDENTIAL_ENCRYPTION_KEY`, truncated/padded to 32 bytes.
@@ -133,9 +151,10 @@ the others are identical in shape.
 **Scopes:** Sheets requests `spreadsheets.readonly` + `drive.readonly`; Gmail requests
 `gmail.readonly` — a **restricted** scope, which caps a Testing-mode project at 100 users.
 
-> ⚠️ `_pending` is a module-level dict ([oauth.py:31](../apps/agent/app/api/oauth.py#L31)).
-> It does not survive a restart and breaks with more than one worker: the callback can land
-> on a process that never saw the `state`. Needs Redis before any multi-instance deploy.
+Connecting an indexable connector (`gmail`, `notion`) queues a **RAG backfill** as a
+FastAPI background task. Backgrounded deliberately: a mailbox backfill is thousands of
+embeddings and tens of seconds, and holding the callback open would leave the user on a
+hung browser tab. Until it finishes the retriever falls back to live provider search.
 
 **Token refresh** happens lazily at read time, not on a schedule
 ([google_auth.py:15-33](../apps/agent/app/connectors/google_auth.py#L15-L33)): if
@@ -228,23 +247,39 @@ If `action` is set, `action_required` is flagged for step 7.
 
 [retriever.py:111-165](../apps/agent/app/graph/nodes/retriever.py#L111-L165):
 
+**Two paths, chosen by source type.** `TEXT_CONNECTORS` (`gmail`, `notion`) are answered
+from the vector index; everything else takes the live connector path below. This split is
+the whole design: a question about email is a semantic lookup, while "what was Q4
+revenue?" needs an exact sum over every row — and nearest-neighbour search over embedded
+spreadsheet rows answers a different question while looking authoritative.
+
 1. `_parse_plan_meta` extracts connectors **and** `question_type`. Unknown connector names
    are dropped; an empty list falls back to `mock`. `question_type` is written to state —
    `compute_node` reads it too.
-2. **`_candidates` asks the provider's own index first.** `_search_query` reduces the
+2. **`_vector_hits` searches the index** for any text connector in the plan. The question
+   is embedded with `input_type="query"` (Voyage's models are asymmetric — using
+   `document` for both measurably degrades recall), and the nearest chunks are fetched
+   with pgvector's `<=>` operator, filtered to `user_id`, and cut at cosine distance
+   `0.6`. Without that cut an ANN index has no concept of "nothing relevant here" and
+   returns the twelve least-irrelevant chunks in the account.
+   `group_by_resource` collapses chunk hits into one entry per document, each carrying a
+   `citation` of `{connector, resource_id, title}`. A connector answered from the index is
+   removed from the live-fetch list — a warm index makes the connector round trip pure cost.
+   Embeddings unconfigured, or Voyage unreachable, returns `[]` and falls through.
+3. **`_candidates` asks the provider's own index first** (live path). `_search_query` reduces the
    question to content words (`"What was our Q4 revenue?"` → `"q4 revenue"`) and calls
    `<connector>_search` over MCP. Gmail uses its query API, Notion its `/search`, Sheets a
    Drive `fullText` query that matches on **cell contents**, not just titles.
-3. **`<connector>_list_resources` is the fallback**, used only when search returns nothing
+4. **`<connector>_list_resources` is the fallback**, used only when search returns nothing
    or fails. That matters because a connector's listing is bounded by its own paging —
    Gmail lists just the 5 most recent threads — so search is what makes older data
    reachable at all. A failed search degrades here rather than failing the connector.
-4. **`_select_resources` picks at most 3** by title-keyword match against the question,
+5. **`_select_resources` picks at most 3** by title-keyword match against the question,
    ranking *all* candidates so a single weak match still fills the budget. No matches →
    first 3 in listing order, and `resources_narrowed` is logged.
-5. Per resource: Redis first (`connector:<name>:<user_id>:<resource_id>`, 5-min TTL), else
+6. Per resource: Redis first (`connector:<name>:<user_id>:<resource_id>`, 5-min TTL), else
    `<connector>_read` → the connector decrypts the user's token and calls the SaaS API.
-6. **`_trim` caps the payload** — reaching *into* the dict (`rows` for Sheets, `messages`
+7. **`_trim` caps the payload** — reaching *into* the dict (`rows` for Sheets, `messages`
    for Gmail), because every connector returns a dict wrapper.
    - `question_type ∈ {aggregation, trend, comparison}` → keep **document order**, head-truncate.
      Relevance-reordering rows would corrupt a sum.
@@ -508,7 +543,9 @@ rather than 400.
 
 | Gap | Where | Impact |
 |---|---|---|
-| Retrieval ranks provider search results lexically; there is still no embedding, chunking, or citation | [retriever.py](../apps/agent/app/graph/nodes/retriever.py) | See [PLAN.md](PLAN.md) Phase 10. The summarizer sees only the analyst's JSON, so it cannot cite a cell |
+| Hits are ordered by raw cosine distance with a `0.6` cut; there is no reranking | [search.py](../apps/agent/app/rag/search.py) | A cross-encoder rerank over the top-k would sharpen the ordering |
+| No retrieval evals | — | Recall@k against a labelled set, separate from the answer evals |
+| Citations reach the analyst but nothing renders them | [MessageBubble.tsx](../apps/web/src/components/MessageBubble.tsx) | Every vector entry carries `{connector, resource_id, title}`; the UI shows prose only |
 | `list_resources` on Gmail is N+1 | [gmail.py](../apps/agent/app/connectors/gmail.py) | The list response carries no subject, so each thread costs its own `threads().get()`. Capped at 8 to bound the latency rather than batched |
 | No CI, no deployment target | — | Tests and lint run only locally |
 | `compute_node` handles tabular sources only | [compute.py](../apps/agent/app/graph/nodes/compute.py) | A Gmail or Notion aggregation ("how many invoices did we send?") is still answered by the analyst reading a sample |

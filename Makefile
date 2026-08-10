@@ -1,4 +1,16 @@
-COMPOSE       = docker compose -f infra/docker/docker-compose.yml
+# NEXT_PUBLIC_* is inlined into the client bundle at *build* time, and
+# WEBHOOK_SECRET has to match on both sides of the n8n boundary. Compose reads
+# these from the environment for `build.args` / `${...}` interpolation, so they
+# are exported here rather than left to the caller — forgetting them produces a
+# UI that hangs on "Loading…" and a ticker that 401s, neither of which points at
+# a missing variable.
+# A leading '^' already excludes comment lines, so no '#' appears here — inside
+# $(shell ...) Make would treat one as the start of a Makefile comment and
+# swallow the rest of the line.
+BUILD_ENV = $(shell grep -hE '^NEXT_PUBLIC_[A-Z_]+=.+' apps/web/.env.local 2>/dev/null) \
+            $(shell grep -hE '^WEBHOOK_SECRET=.+' apps/agent/.env 2>/dev/null)
+
+COMPOSE       = $(BUILD_ENV) docker compose -f infra/docker/docker-compose.yml
 COMPOSE_INFRA = docker compose -f infra/docker/docker-compose.infra.yml
 
 .PHONY: dev dev-web dev-agent mcp-server infra infra-down down build migrate import-workflows logs ps

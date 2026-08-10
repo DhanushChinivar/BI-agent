@@ -1,0 +1,114 @@
+"""Vector search over a user's indexed chunks."""
+import logging
+
+from sqlalchemy import select
+
+from app.db.engine import get_session_factory
+from app.db.models import DocumentChunk
+from app.rag.embeddings import EmbeddingsUnavailableError, embed_query, enabled
+
+logger = logging.getLogger(__name__)
+
+_TOP_K = 12
+
+# Cosine distance: 0 is identical, 2 is opposite. This is a floor against absurd
+# matches, *not* a relevance filter — measured against real voyage-3-lite vectors
+# (scripts/calibrate_retrieval.py), the two populations overlap:
+#
+#   correct matches      0.314 to 0.629
+#   nothing-answers-this 0.554 to 0.817
+#
+# There is no value that keeps every true hit and drops every false one, so the
+# cut is placed to keep all of the former. The asymmetry justifies it: a passage
+# that reaches the analyst but does not answer the question costs some tokens and
+# the analyst says so, while a true answer cut here is simply lost and the agent
+# confidently reports it has no data. Tightening this is reranking's job.
+_MAX_DISTANCE = 0.75
+
+
+async def search(
+    user_id: str, question: str, connectors: list[str] | None = None, k: int = _TOP_K
+) -> list[dict]:
+    """Chunks nearest to `question`, scoped to one user.
+
+    Returns [] rather than raising when embeddings are unconfigured or Voyage is
+    unreachable, so the retriever falls back to provider search instead of
+    failing the whole question.
+    """
+    if not enabled():
+        return []
+
+    try:
+        vector = await embed_query(question)
+    except EmbeddingsUnavailableError as exc:
+        logger.warning("Vector search unavailable: %s", exc)
+        return []
+
+    distance = DocumentChunk.embedding.cosine_distance(vector)
+
+    stmt = (
+        select(
+            DocumentChunk.connector,
+            DocumentChunk.resource_id,
+            DocumentChunk.resource_title,
+            DocumentChunk.chunk_index,
+            DocumentChunk.content,
+            distance.label("distance"),
+        )
+        # user_id is not optional and never comes from the request body — one
+        # missing predicate here would serve another tenant's email as context.
+        .where(DocumentChunk.user_id == user_id)
+        .order_by(distance)
+        .limit(k)
+    )
+    if connectors:
+        stmt = stmt.where(DocumentChunk.connector.in_(connectors))
+
+    factory = get_session_factory()
+    async with factory() as session:
+        rows = (await session.execute(stmt)).all()
+
+    return [
+        {
+            "connector": r.connector,
+            "resource_id": r.resource_id,
+            "resource_title": r.resource_title,
+            "chunk_index": r.chunk_index,
+            "content": r.content,
+            "distance": float(r.distance),
+            # 0 distance → 1.0. Reported alongside the raw distance because
+            # "score" is what a reader expects and distance sorts backwards.
+            "score": round(1.0 - float(r.distance) / 2.0, 4),
+        }
+        for r in rows
+        if float(r.distance) <= _MAX_DISTANCE
+    ]
+
+
+def group_by_resource(hits: list[dict]) -> list[dict]:
+    """Collapse chunk hits into one entry per source document.
+
+    The analyst reads better from "this thread, these three relevant passages"
+    than from twelve loose fragments, and it makes a citation point at a
+    document rather than at an offset.
+    """
+    grouped: dict[tuple[str, str], dict] = {}
+
+    for hit in hits:
+        key = (hit["connector"], hit["resource_id"])
+        entry = grouped.get(key)
+        if entry is None:
+            entry = {
+                "connector": hit["connector"],
+                "resource_id": hit["resource_id"],
+                "title": hit["resource_title"],
+                "passages": [],
+                "best_score": hit["score"],
+            }
+            grouped[key] = entry
+        entry["passages"].append(
+            {"chunk_index": hit["chunk_index"], "text": hit["content"], "score": hit["score"]}
+        )
+        entry["best_score"] = max(entry["best_score"], hit["score"])
+
+    return sorted(grouped.values(), key=lambda e: -e["best_score"])

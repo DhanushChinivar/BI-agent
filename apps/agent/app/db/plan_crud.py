@@ -1,5 +1,5 @@
 """CRUD helpers for user plan and query usage."""
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,7 +24,7 @@ async def check_and_increment(session: AsyncSession, user_id: str) -> tuple[bool
     row = await get_or_create_plan(session, user_id)
 
     # Reset counter if it's a new day
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if row.reset_at.date() < now.date():
         row.queries_today = 0
         row.reset_at = now

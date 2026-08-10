@@ -22,13 +22,15 @@ logger = logging.getLogger(__name__)
 
 # Callers that never carry a Clerk JWT because they authenticate by their own
 # mechanism: OAuth callbacks are bound by the `state` parameter, the Stripe
-# webhook by its signature header, the n8n webhook by HMAC. Probes are
-# unauthenticated by design. Without this set every one of them returns 401
-# under APP_ENV=production — see docs/DATAFLOW.md §11.
-# /v1/schedules/run-due is the n8n ticker, verified by the same HMAC as the n8n
-# webhook. Note it is the *only* exempt path under /v1/schedules — the list,
-# create, and delete routes are per-user and stay behind the JWT.
-_EXEMPT_PATHS = frozenset({"/health", "/metrics", "/v1/schedules/run-due"})
+# webhook by its signature header, the n8n webhook and both ticker routes by
+# HMAC. Probes are unauthenticated by design. Without this set every one of them
+# returns 401 under APP_ENV=production — see docs/DATAFLOW.md §11.
+#
+# `run-due` and `sync-due` are the *only* exempt paths under /v1/schedules and
+# /v1/index; the per-user list, create, and delete routes stay behind the JWT.
+_EXEMPT_PATHS = frozenset(
+    {"/health", "/metrics", "/v1/schedules/run-due", "/v1/index/sync-due"}
+)
 _EXEMPT_PREFIXES = ("/v1/stripe/webhook", "/v1/webhooks/n8n")
 
 

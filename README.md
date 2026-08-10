@@ -22,10 +22,16 @@ publishes each connector's `list_resources` / `read` / `search` as MCP tools, an
 retriever consumes them as an MCP client. OAuth remains the authorization layer that
 supplies per-user tokens — MCP is the transport/tool-discovery layer on top.
 
-Totals are **computed, not inferred**. On aggregation, trend, and comparison questions
-`compute_node` loads the untrimmed table into an in-memory DuckDB, asks Claude for a
-single `SELECT`, and executes it — so a sum covers every row rather than the sample the
-analyst can fit in a prompt. Other question types skip the node entirely.
+**Two retrieval paths, chosen by source type.** Gmail threads and Notion pages are
+chunked, embedded with `voyage-3-lite`, and stored in pgvector; questions about them are
+answered by vector similarity and come back with citations. Spreadsheets are deliberately
+*not* embedded — "what was Q4 revenue?" needs an exact sum over every row, and
+nearest-neighbour lookup over embedded rows answers a different question convincingly.
+
+Totals are therefore **computed, not inferred**. On aggregation, trend, and comparison
+questions `compute_node` loads the untrimmed table into an in-memory DuckDB, asks Claude
+for a single `SELECT`, and executes it — so a sum covers every row rather than the sample
+the analyst can fit in a prompt. Other question types skip the node entirely.
 
 ## Stack
 
@@ -35,7 +41,8 @@ analyst can fit in a prompt. Other question types skip the node entirely.
 | Backend | FastAPI, LangGraph, Anthropic Claude |
 | Connectors | MCP (FastMCP server + client) over streamable-http |
 | Compute | DuckDB (in-memory, external access disabled) for exact aggregates |
-| Database | PostgreSQL 16 (credentials, plans, conversation history) |
+| Retrieval | Voyage `voyage-3-lite` embeddings + pgvector (HNSW, cosine) for Gmail/Notion |
+| Database | PostgreSQL 16 + pgvector (credentials, plans, history, schedules, chunks) |
 | Cache | Redis 7 (connector data, 5-min TTL) |
 | Automation | n8n (scheduled reports, data alerts) |
 | Billing | Stripe (free: 3 queries/day, pro: unlimited) |
@@ -97,6 +104,23 @@ make ps         # show running containers
 3. Set `NOTION_CLIENT_ID`, `NOTION_CLIENT_SECRET` in `apps/agent/.env`
 4. Visit `http://localhost:8000/v1/oauth/notion/start?user_id=<your-id>` to connect
 
+### Semantic search over Gmail and Notion
+
+Retrieval over text sources needs an embedding key. Anthropic sells no embedding model,
+so this uses [Voyage](https://voyageai.com), its recommended partner:
+
+```bash
+# apps/agent/.env
+VOYAGE_API_KEY=pa-...
+```
+
+Without it the project still runs — `enabled()` is false, indexing is skipped, and the
+retriever falls back to each provider's own search API. Degraded, not broken.
+
+Connecting Gmail or Notion kicks off a backfill in the background, and the `schedule_ticker`
+workflow re-syncs every 5 minutes, skipping resources whose revision has not changed.
+Check progress with `GET /v1/index/status`, or force a pass with `POST /v1/index/sync`.
+
 ### Scheduled reports
 Schedules live in Postgres (`scheduled_reports`), not in n8n. n8n runs exactly one
 workflow — `schedule_ticker` — which every 5 minutes calls `POST /v1/schedules/run-due`,
@@ -156,8 +180,7 @@ uv run pytest tests/evals/ -v --timeout=120
 
 ## Status
 
-Phases 1–9 are complete (pipeline, connectors, OAuth, dashboard, auth, billing,
-n8n automation, Docker, MCP migration, security hardening). Remaining: a real
-retrieval layer (embeddings + vector store + citations — today's retriever filters
-by keyword overlap, so this is not yet RAG in the usual sense), CI, and deployment.
-See [`docs/PLAN.md`](docs/PLAN.md) for the breakdown.
+Phases 1–10 are complete (pipeline, connectors, OAuth, dashboard, auth, billing,
+n8n automation, Docker, MCP migration, security hardening, RAG retrieval for text
+sources). Remaining: reranking, retrieval evals (recall@k), rendering citations in the
+UI, CI, and deployment. See [`docs/PLAN.md`](docs/PLAN.md) for the breakdown.

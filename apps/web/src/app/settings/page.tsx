@@ -14,33 +14,62 @@ const FREE_LIMIT = 3;
 function SettingsPageInner() {
   const [planInfo, setPlanInfo] = useState<PlanInfo | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const searchParams = useSearchParams();
   const upgraded = searchParams.get("upgraded");
 
   useEffect(() => {
+    // `.catch(() => null)` left planInfo null, and null renders identically to a
+    // real Free plan — so a Pro subscriber whose plan lookup failed was shown
+    // "Free" and invited to pay again.
     fetch(`/api/agent/v1/plan/status`)
-      .then((r) => r.json())
-      .then(setPlanInfo)
-      .catch(() => null);
+      .then((r) => {
+        if (!r.ok) throw new Error(`Could not load your plan (${r.status}).`);
+        return r.json();
+      })
+      .then((data) => {
+        setPlanInfo(data);
+        setError(null);
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : "Could not load your plan.");
+      });
   }, []);
 
-  const startCheckout = async () => {
+  /** Send the browser to a Stripe-hosted page, or explain why we cannot. */
+  const goToStripe = async (label: string, request: () => Promise<Response>) => {
     setLoading(true);
-    const res = await fetch("/api/billing/checkout", { method: "POST" });
-    const { url } = await res.json();
-    window.location.href = url;
+    setError(null);
+    try {
+      const res = await request();
+      const body = await res.json().catch(() => ({}));
+      // Neither call checked `res.ok`, so a 500 — which is exactly what a
+      // missing STRIPE_SECRET_KEY now produces by design — yielded an
+      // undefined `url` and navigated the browser to "/undefined".
+      if (!res.ok || !body?.url) {
+        throw new Error(body?.error ?? `${label} is unavailable right now.`);
+      }
+      window.location.href = body.url;
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : `${label} is unavailable right now.`);
+      // Only on failure: on success the browser is navigating away, and
+      // re-enabling the button invites a second checkout session.
+      setLoading(false);
+    }
   };
 
-  const openPortal = async () => {
+  const startCheckout = () =>
+    goToStripe("Checkout", () => fetch("/api/billing/checkout", { method: "POST" }));
+
+  const openPortal = () => {
     if (!planInfo?.stripe_customer_id) return;
-    setLoading(true);
-    const res = await fetch("/api/billing/portal", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ customerId: planInfo.stripe_customer_id }),
-    });
-    const { url } = await res.json();
-    window.location.href = url;
+    return goToStripe("The billing portal", () =>
+      fetch("/api/billing/portal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerId: planInfo.stripe_customer_id }),
+      }),
+    );
   };
 
   const isPro = planInfo?.plan === "pro";
@@ -53,6 +82,12 @@ function SettingsPageInner() {
         </a>
         <h1 className="text-2xl font-semibold mb-8">Settings</h1>
 
+        {error && (
+          <div className="mb-6 px-4 py-3 rounded-xl bg-red-950/40 border border-red-800 text-red-300 text-sm">
+            {error}
+          </div>
+        )}
+
         {upgraded && (
           <div className="mb-6 px-4 py-3 rounded-xl bg-green-900/30 border border-green-700 text-green-300 text-sm">
             You're now on Pro. Enjoy unlimited queries.
@@ -64,7 +99,9 @@ function SettingsPageInner() {
           <div className="flex items-center justify-between mb-4">
             <div>
               <p className="text-sm font-semibold">
-                {isPro ? (
+                {planInfo === null ? (
+                  <span className="text-zinc-500">…</span>
+                ) : isPro ? (
                   <span className="text-indigo-400">Pro</span>
                 ) : (
                   <span className="text-zinc-300">Free</span>
@@ -78,7 +115,7 @@ function SettingsPageInner() {
               {isPro && <p className="text-xs text-zinc-500 mt-0.5">Unlimited queries</p>}
             </div>
             <div>
-              {isPro ? (
+              {planInfo === null ? null : isPro ? (
                 <button
                   onClick={openPortal}
                   disabled={loading}
@@ -98,7 +135,7 @@ function SettingsPageInner() {
             </div>
           </div>
 
-          {!isPro && (
+          {planInfo !== null && !isPro && (
             <div className="mt-4 pt-4 border-t border-zinc-800">
               <p className="text-xs text-zinc-500 mb-2">Pro includes:</p>
               <ul className="text-xs text-zinc-400 space-y-1">

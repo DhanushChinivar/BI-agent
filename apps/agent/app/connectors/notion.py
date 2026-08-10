@@ -58,7 +58,16 @@ class NotionConnector:
             results = resp.json().get("results", [])
 
         return [
-            {"id": p["id"], "title": _extract_title(p) or "(untitled)", "type": "notion_page", "url": p.get("url", "")}
+            {
+                "id": p["id"],
+                "title": _extract_title(p) or "(untitled)",
+                "type": "notion_page",
+                "url": p.get("url", ""),
+                # The RAG index skips a resource whose revision is unchanged.
+                # Without this it falls back to the title, so an edited page
+                # keeps its stale vectors until someone renames it.
+                "last_edited_time": p.get("last_edited_time", ""),
+            }
             for p in results
         ]
 
@@ -98,6 +107,12 @@ class NotionConnector:
             results = resp.json().get("results", [])
 
         return [
-            {"id": r["id"], "title": _extract_title(r) or "(untitled)", "type": "notion_page", "url": r.get("url", "")}
+            {
+                "id": r["id"],
+                "title": _extract_title(r) or "(untitled)",
+                "type": "notion_page",
+                "url": r.get("url", ""),
+                "last_edited_time": r.get("last_edited_time", ""),
+            }
             for r in results
         ]

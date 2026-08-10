@@ -14,6 +14,7 @@ from app.api import (
     connectors,
     conversations,
     health,
+    index_sync,
     n8n_webhooks,
     oauth,
     query,
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
     app.include_router(billing.router)
     app.include_router(n8n_webhooks.router)
     app.include_router(schedules.router)
+    app.include_router(index_sync.router)
 
     # Prometheus metrics at /metrics
     Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)

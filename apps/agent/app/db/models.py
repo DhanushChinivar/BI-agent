@@ -1,13 +1,29 @@
 """SQLAlchemy ORM models."""
 import base64
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from cryptography.fernet import Fernet
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.config.settings import get_settings
 from app.db.engine import Base
+
+# voyage-3-lite's native width. Hard-coded rather than read from settings
+# because it is baked into the column type and the index: changing it is a
+# migration, not a config change.
+EMBEDDING_DIMS = 512
 
 
 def _fernet() -> Fernet:
@@ -30,7 +46,7 @@ class UserConnectorCredential(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(UTC),
     )
 
     def set_credentials(self, data: dict) -> None:
@@ -61,7 +77,80 @@ class UserPlan(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class IndexedResource(Base):
+    """Per-resource sync bookkeeping for the RAG index.
+
+    Separate from `document_chunks` so a resync can ask "has this changed?"
+    without touching the vectors. `revision` is whatever the provider gives us
+    to detect change cheaply — Gmail's `historyId`, Notion's `last_edited_time`.
+    Unchanged revision means skip: re-embedding an untouched mailbox on every
+    tick would be the dominant cost of the whole feature.
+    """
+
+    __tablename__ = "indexed_resources"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    connector: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+
+    revision: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Which model produced the stored vectors. A change here means every chunk
+    # for this resource is stale even if the content is not — vectors from two
+    # different models are not comparable.
+    embedding_model: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    indexed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "connector", "resource_id", name="uq_indexed_resource"
+        ),
+    )
+
+
+class DocumentChunk(Base):
+    """One embedded span of text from a connector resource.
+
+    Only unstructured sources land here. Spreadsheets stay on the SQL path:
+    "what was Q4 revenue?" wants an exact sum over every row, and nearest-
+    neighbour lookup over embedded rows answers a different question badly.
+    """
+
+    __tablename__ = "document_chunks"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    connector: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(256), nullable=False)
+
+    # Carried so an answer can cite where a claim came from without a second
+    # round trip to the provider.
+    resource_title: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMS), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (
+        # Every search is "this user's chunks, optionally these connectors",
+        # so the filter columns lead and the vector index sits beside them.
+        Index("ix_document_chunks_scope", "user_id", "connector"),
+        Index("ix_document_chunks_resource", "user_id", "connector", "resource_id"),
     )
 
 
@@ -113,7 +202,7 @@ class Conversation(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(UTC),
     )
 
 

@@ -23,6 +23,7 @@ graph TD
         ConnStatus["/v1/connectors/status\n/v1/oauth/*/start · callback"]
         Webhook["Inbound Webhook\n/v1/webhooks/n8n  (HMAC)"]
         Schedules["Scheduled Reports\n/v1/schedules · run-due (HMAC)"]
+        IndexAPI["RAG Index\n/v1/index/status · sync · sync-due (HMAC)"]
         StripeHook["/v1/stripe/webhook"]
         Metrics["/metrics (Prometheus)"]
 
@@ -52,15 +53,16 @@ graph TD
     end
 
     subgraph Data ["Data Layer"]
-        PG[("PostgreSQL 16\nCredentials · Plans\nConversations · Messages\nScheduled reports")]
+        PG[("PostgreSQL 16 + pgvector\nCredentials · Plans · Conversations\nScheduled reports · document_chunks")]
         Redis[("Redis 7\nConnector cache, 5-min TTL")]
     end
 
     subgraph Automation ["n8n"]
-        Ticker["schedule_ticker\n*/5 * * * * → run-due → email\n(the only workflow; Postgres owns the schedules)"]
+        Ticker["schedule_ticker\n*/5 * * * * → run-due + index sync\n(the only workflow; Postgres owns the state)"]
     end
 
     Claude["☁️ Anthropic Claude API"]
+    Voyage["☁️ Voyage AI (embeddings)"]
     Stripe["☁️ Stripe"]
     ClerkSvc["☁️ Clerk (JWKS)"]
     Google["☁️ Google APIs"]
@@ -92,6 +94,8 @@ graph TD
     Retriever -->|"MCP streamable-http<br/>X-Service-Secret"| MCPServer
     MCPServer --> Connectors
     Retriever <--> Redis
+    Retriever -->|"vector search (gmail, notion)\ncosine, top-k, user-scoped"| PG
+    Retriever -->|"embed question"| Voyage
     Connectors -->|"decrypt OAuth tokens"| PG
     Sheets --> Google
     Gmail --> Google
@@ -107,6 +111,9 @@ graph TD
     StripeHook --> PG
 
     Ticker -->|"POST /v1/schedules/run-due (HMAC)"| Schedules
+    Ticker -->|"POST /v1/index/sync-due (HMAC)"| IndexAPI
+    IndexAPI -->|"chunk → embed → upsert"| PG
+    IndexAPI --> Voyage
     Schedules -->|"claim due rows FOR UPDATE SKIP LOCKED"| PG
     Schedules -->|"graph.ainvoke per due row"| Graph
 ```
@@ -143,9 +150,9 @@ graph TD
 
 ## Known Architectural Gaps
 
-- **No RAG.** `retriever_node` now queries each provider's own search index and ranks the results by keyword overlap, but there is still no ingest step, no chunking, no embedding, no vector store, and no citations — a semantic match with no shared words is only found if the provider's index finds it. See Phase 10 in [`docs/PLAN.md`](../PLAN.md).
+- **Retrieval is real for text, deliberately not for tables.** Gmail and Notion are chunked, embedded (`voyage-3-lite`), and searched in pgvector with citations. Spreadsheets are never embedded — an exact sum needs `compute_node`, not nearest-neighbour lookup. What is missing is reranking, retrieval evals, and rendering the citations in the UI.
 - **No CI and no deployment.** There is no `.github/` directory and no hosting target configured.
-- **Ranking is still lexical.** `_select_resources` scores resource *titles* by keyword overlap and `_trim` scores rows the same way. Provider search now supplies the candidates, so the old "5 most recent Gmail threads" ceiling is gone, but the ranking on top of it has no notion of meaning.
+- **Ranking on the live path is still lexical.** `_select_resources` scores resource *titles* by keyword overlap and `_trim` scores rows the same way. That path now runs only for spreadsheets and for text connectors whose index is still cold.
 - **`compute_node` covers tabular sources only.** An aggregation over Gmail or Notion ("how many invoices did we send?") is still answered by the analyst reading a sample.
 - **Model-written SQL executes in the API process.** DuckDB runs with `enable_external_access=false` and a single-`SELECT` check gates it, both asserted in `tests/unit/test_compute.py` — but it is generated code running in-process, not in a separate sandbox.
 

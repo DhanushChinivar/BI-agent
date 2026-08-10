@@ -6,6 +6,7 @@ from app.cache import cache_invalidate
 from app.connectors import REGISTRY
 from app.db.engine import get_session_factory
 from app.db.models import UserConnectorCredential
+from app.rag.ingest import drop_connector_index
 
 router = APIRouter(prefix="/v1", tags=["connectors"])
 
@@ -67,8 +68,14 @@ async def disconnect_connector(connector_name: str, request: Request) -> dict:
     # disconnected. `cache_invalidate` existed for exactly this and had no callers.
     cleared = await cache_invalidate(user_id, connector_name)
 
+    # The vector index outlives the cache by design — it is durable storage, not
+    # a 5-minute TTL — so without this a disconnected mailbox stays semantically
+    # searchable forever. Same reasoning as the cache, longer blast radius.
+    chunks_removed = await drop_connector_index(user_id, connector_name)
+
     return {
         "connector": connector_name,
         "disconnected": row is not None,
         "cache_entries_cleared": cleared,
+        "index_chunks_removed": chunks_removed,
     }

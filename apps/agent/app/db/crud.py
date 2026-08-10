@@ -1,5 +1,5 @@
 """CRUD helpers for connector credentials."""
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,5 +32,5 @@ async def upsert_credentials(
         row = UserConnectorCredential(user_id=user_id, connector=connector)
         session.add(row)
     row.set_credentials(data)
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = datetime.now(UTC)
     await session.commit()
