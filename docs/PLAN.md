@@ -422,7 +422,8 @@ Phase 11 CI (do first — an afternoon, and it protects everything after)
 | `apps/agent/app/graph/builder.py` | LangGraph compilation |
 | `apps/agent/app/graph/state.py` | `AgentState` TypedDict |
 | `apps/agent/app/graph/nodes/planner.py` | Decomposes question → plan |
-| `apps/agent/app/graph/nodes/retriever.py` | Fetches data via MCP tools (MCP client) |
+| `apps/agent/app/graph/nodes/retriever.py` | Provider search via MCP tools, then ranks and trims |
+| `apps/agent/app/graph/nodes/compute.py` | Model-written SQL over the untrimmed table (DuckDB, sandboxed) |
 | `apps/agent/app/graph/nodes/analyst.py` | LLM-powered analysis |
 | `apps/agent/app/graph/nodes/summarizer.py` | Streams final answer |
 | `apps/agent/app/graph/nodes/action.py` | Triggers n8n workflows |

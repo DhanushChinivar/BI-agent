@@ -22,6 +22,11 @@ class AgentState(TypedDict, total=False):
 
     # Retrieval output
     retrieved_data: list[dict[str, Any]]
+    question_type: str             # planner's classification; retriever and compute both read it
+
+    # Compute output — SQL run over the untrimmed table, so a total is computed
+    # rather than derived from the sampled rows. None when it did not engage.
+    computation: dict[str, Any] | None
 
     # Analyst output
     analysis: dict[str, Any]
@@ -37,5 +42,5 @@ class AgentState(TypedDict, total=False):
     schedule_result: dict[str, Any] | None
 
     # Control flow
-    next_node: Literal["planner", "retriever", "analyst", "summarizer", "action", "end"]
+    next_node: Literal["planner", "retriever", "compute", "analyst", "summarizer", "action", "end"]
     error: str | None

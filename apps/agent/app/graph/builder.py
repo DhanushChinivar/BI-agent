@@ -3,6 +3,7 @@ from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes.action import action_node
 from app.graph.nodes.analyst import analyst_node
+from app.graph.nodes.compute import compute_node
 from app.graph.nodes.planner import planner_node
 from app.graph.nodes.retriever import retriever_node
 from app.graph.nodes.summarizer import summarizer_node
@@ -19,13 +20,15 @@ def build_graph():
 
     g.add_node("planner", planner_node)
     g.add_node("retriever", retriever_node)
+    g.add_node("compute", compute_node)
     g.add_node("analyst", analyst_node)
     g.add_node("summarizer", summarizer_node)
     g.add_node("action", action_node)
 
     g.add_edge(START, "planner")
     g.add_edge("planner", "retriever")
-    g.add_edge("retriever", "analyst")
+    g.add_edge("retriever", "compute")
+    g.add_edge("compute", "analyst")
     g.add_edge("analyst", "summarizer")
     g.add_conditional_edges("summarizer", _route_after_summarizer, {"action": "action", END: END})
     g.add_edge("action", END)

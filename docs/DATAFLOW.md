@@ -155,34 +155,37 @@ connection.
  1  ├─ POST ────▶│             │               │            │             │
  2  │            ├─ +Bearer ──▶│               │            │             │
  3  │            │             ├─ Auth → Gating (quota++) → SlowAPI       │
- 4  │            │             ├─ last 10 msgs ────────────▶│             │
+ 4  │            │             ├─ ownership check + last 10 msgs ─▶│      │
  5  │◀════ stage {planning} ═══┤               │            │             │
  6  │            │             ├── planner chat() ────────────────────────▶│  LLM 1
  7  │            │             │◀─ {steps, connectors, question_type} ─────┤
  8  │◀════ stage {retrieving} ═┤               │            │             │
- 9  │            │             ├─ list_resources ─▶│  X-Service-Secret    │
+ 9  │            │             ├─ search(keywords) ▶│  X-Service-Secret   │
 10  │            │             │               ├─ decrypt token ─▶│       │
-11  │            │             │               ├── Drive API ─────────────▶│
-12  │            │             ├─ _select_resources → at most 3           │
+11  │            │             │               ├── Drive/Gmail/Notion ────▶│
+12  │            │             ├┄ no hits: list_resources ─▶│ (fallback)  │
+13  │            │             ├─ _select_resources → at most 3           │
     │            │             │               │            │             │
     │       ┌─── LOOP per selected resource ───────────────────────────┐  │
-13  │       │    │             ├─ cache_get ───────────────▶│         │  │
-14  │       │    │             ├┄ on miss: _read ─▶│ ── Sheets API ───┼──▶│
-15  │       │    │             ├┄ cache_set (TTL 300s) ────▶│         │  │
-16  │       │    │             ├─ _trim → sets omitted_items if cut   │  │
+14  │       │    │             ├─ cache_get ───────────────▶│         │  │
+15  │       │    │             ├┄ on miss: _read ─▶│ ── Sheets API ───┼──▶│
+16  │       │    │             ├┄ cache_set (TTL 300s) ────▶│         │  │
+17  │       │    │             ├─ _trim → omitted_items + full_data    │  │
     │       └─────────────────────────────────────────────────────────┘  │
     │            │             │               │            │             │
-17  │◀════ warning {connector} ┤   per failed connector      │             │
-18  │◀════ stage {analyzing} ══┤               │            │             │
-19  │            │             ├── analyst chat() ─────────────────────────▶│  LLM 2 ← the answer
-20  │◀════ stage {summarizing} ┤               │            │             │
-21  │            │             ├── summarizer stream() ────────────────────▶│  LLM 3
+18  │◀════ warning {connector} ┤   per failed connector      │             │
+19  │◀════ stage {analyzing} ══┤               │            │             │
+20  │            │             ├┄ compute: SQL chat() ─────────────────────▶│  LLM 2 (tabular +
+21  │            │             ├┄ execute in DuckDB (in-process)           │   aggregation only)
+22  │            │             ├── analyst chat() ─────────────────────────▶│  LLM 3 ← the answer
+23  │◀════ stage {summarizing} ┤               │            │             │
+24  │            │             ├── summarizer stream() ────────────────────▶│  LLM 4
     │       ┌─── LOOP per token ──────────────────────────────────────┐  │
-22  │◀════ chunk {content} ════┤◀──────────────────────────────────────┼──┤
+25  │◀════ chunk {content} ════┤◀──────────────────────────────────────┼──┤
     │       └─────────────────────────────────────────────────────────┘  │
-23  │            │             ├── title chat() ───────────────────────────▶│  LLM 4 (first turn)
-24  │            │             ├─ persist Q&A ─────────────▶│             │
-25  │◀════ done {conversation_id} ─┤            │            │             │
+26  │            │             ├── title chat() ───────────────────────────▶│  LLM 5 (first turn)
+27  │            │             ├─ persist Q&A ─────────────▶│             │
+28  │◀════ done {conversation_id} ─┤            │            │             │
 
   ──▶ call      ◀── return      ═══▶ SSE to browser      ┄┄▶ conditional
 ```
@@ -226,37 +229,72 @@ If `action` is set, `action_required` is flagged for step 7.
 [retriever.py:111-165](../apps/agent/app/graph/nodes/retriever.py#L111-L165):
 
 1. `_parse_plan_meta` extracts connectors **and** `question_type`. Unknown connector names
-   are dropped; an empty list falls back to `mock`.
-2. `<connector>_list_resources` over MCP → the agent opens a streamable-http session to
-   `mcp-server`, authenticated with `X-Service-Secret`.
-3. **`_select_resources` picks at most 3** by title-keyword match against the question. ≤3
-   available → all are read. No title matches → first 3, and `resources_narrowed` is logged.
-4. Per resource: Redis first (`connector:<name>:<user_id>:<resource_id>`, 5-min TTL), else
+   are dropped; an empty list falls back to `mock`. `question_type` is written to state —
+   `compute_node` reads it too.
+2. **`_candidates` asks the provider's own index first.** `_search_query` reduces the
+   question to content words (`"What was our Q4 revenue?"` → `"q4 revenue"`) and calls
+   `<connector>_search` over MCP. Gmail uses its query API, Notion its `/search`, Sheets a
+   Drive `fullText` query that matches on **cell contents**, not just titles.
+3. **`<connector>_list_resources` is the fallback**, used only when search returns nothing
+   or fails. That matters because a connector's listing is bounded by its own paging —
+   Gmail lists just the 5 most recent threads — so search is what makes older data
+   reachable at all. A failed search degrades here rather than failing the connector.
+4. **`_select_resources` picks at most 3** by title-keyword match against the question,
+   ranking *all* candidates so a single weak match still fills the budget. No matches →
+   first 3 in listing order, and `resources_narrowed` is logged.
+5. Per resource: Redis first (`connector:<name>:<user_id>:<resource_id>`, 5-min TTL), else
    `<connector>_read` → the connector decrypts the user's token and calls the SaaS API.
-5. **`_trim` caps the payload** — reaching *into* the dict (`rows` for Sheets, `messages`
+6. **`_trim` caps the payload** — reaching *into* the dict (`rows` for Sheets, `messages`
    for Gmail), because every connector returns a dict wrapper.
    - `question_type ∈ {aggregation, trend, comparison}` → keep **document order**, head-truncate.
      Relevance-reordering rows would corrupt a sum.
    - otherwise → keep the 60 highest keyword-scoring rows.
-   - Anything dropped sets `omitted_items` on the entry.
+   - Anything dropped sets `omitted_items`, and the untrimmed payload is kept on the entry
+     as `full_data` for `compute_node`. `data` remains the sample the analyst reads.
 
 **Failure:** any exception per connector appends
 `{"source", "error", "connector_error": True}` and the loop continues — one dead connector
 does not kill the query. The SSE layer emits `event: warning` for each
 ([query.py:141-144](../apps/agent/app/api/query.py#L141-L144)).
 
-### Step 5 — `analyst_node` (Claude call #2)
+### Step 5 — `compute_node` (Claude call #2, conditional)
+
+Runs only when `question_type ∈ {aggregation, trend, comparison}` **and** at least one
+retrieved entry holds tabular rows. A Gmail or Notion question skips it, and so does a
+lookup — no LLM call is made in those cases.
+
+1. Reads the **untrimmed** rows (`full_data`, else `data`) for up to 3 resources.
+2. `_coerce_numeric` converts mostly-numeric text columns to numbers. Sheets returns every
+   cell as a string, so `sum(revenue)` over the raw frame would concatenate, and `"$1,200"`
+   would not parse at all.
+3. Registers each table as `t0…tN` in an in-memory DuckDB and asks Claude for **one
+   `SELECT`**, given the schema and 3 sample rows — never the full data.
+4. Executes it and returns `{sql, rows, row_count, source_rows}`.
+
+**Sandbox:** the connection runs `SET enable_external_access=false`, which blocks
+`read_csv`, `glob`, `COPY`, `ATTACH`, `INSTALL`, and all HTTP. That is the control that
+makes executing model-written SQL in-process acceptable, and
+`test_compute.py::test_generated_sql_cannot_touch_the_filesystem` fails the build if it
+regresses. A single-statement `SELECT`-only check runs first as defence in depth.
+
+**Every failure is recoverable** — rejected SQL, a DuckDB error, a failed LLM call, or the
+`NO_QUERY` sentinel all return `computation = None` or `{"error": ...}` and the pipeline
+continues on the sampled rows.
+
+### Step 6 — `analyst_node` (Claude call #3)
 
 Strips resource metadata, JSON-dumps `{source, data, error, omitted_items}` per entry into
-one prompt, and asks for `{insights, metrics, trends, anomalies}`. `omitted_items` is
-carried so a total over a trimmed dataset is reported as partial rather than exact.
+one prompt, and asks for `{insights, metrics, trends, anomalies}`.
 
-**This is where the answer is actually computed.** There is no SQL or pandas — Claude reads
-the JSON and does the arithmetic in-context.
+When `computation` is present it is placed **before** the rows and labelled authoritative:
+the system prompt tells the analyst to report those figures as exact, not to contradict
+them with anything derived from the sample, and not to caveat them with `omitted_items` —
+that caveat describes the sample, not the computation. Without a computation, the old
+behaviour stands: `omitted_items` means the total is reported as partial.
 
 Unparseable JSON → `{"insights": ["Analysis unavailable"], ...}`; the pipeline continues.
 
-### Step 6 — Summarizer (Claude call #3, streamed)
+### Step 7 — Summarizer (Claude call #4, streamed)
 
 The SSE path streams tokens itself rather than calling `summarizer_node`, but both build
 the prompt with the shared
@@ -268,9 +306,9 @@ rows.** The summarizer therefore cannot verify a number or cite a cell.
 Each delta is emitted as `event: chunk {"content": "..."}`. Stream failure falls back to a
 plain rendering of the insights.
 
-### Step 7 — Persistence and action
+### Step 8 — Persistence and action
 
-1. `_maybe_update_title` — on the **first** exchange only, a fourth Claude call generates a
+1. `_maybe_update_title` — on the **first** exchange only, a further Claude call generates a
    4–7 word title (`count_messages == 0` is checked *before* the messages are written).
 2. `_persist_messages` writes the user and assistant messages and touches `updated_at`.
 3. If `action_required` → `action_node` runs (see §8) and emits `event: schedule`.
@@ -280,7 +318,7 @@ plain rendering of the insights.
 
 | Event | Payload | When |
 |---|---|---|
-| `stage` | `{stage, message}` | Entering planning / retrieving / analyzing / summarizing |
+| `stage` | `{stage, message}` | Entering planning / retrieving / analyzing / summarizing. **`compute` has no stage of its own** — it runs under `analyzing`, because it is a no-op for most questions and a new stage would need a matching case in the frontend's `StageIndicator` |
 | `warning` | `{connector, message}` | A connector failed, or n8n scheduling failed |
 | `chunk` | `{content}` | Each token of the answer |
 | `schedule` | `{status, workflow, cron}` | A workflow was activated |
@@ -289,8 +327,13 @@ plain rendering of the insights.
 ### Cost and latency profile
 
 Four Claude calls per question, all on `LLM_MODEL` (default `claude-opus-4-7`, $5/$25 per
-MTok) — including the ~20-token title call. Time to first token spans the planner call plus
-all connector round-trips plus the analyst call; nothing streams until step 6.
+MTok) — including the ~20-token title call. A **fifth** is added on aggregation, trend, and
+comparison questions over tabular data, where `compute_node` writes the SQL; every other
+question type skips it. Time to first token spans the planner call plus all connector
+round-trips plus compute plus the analyst call; nothing streams until step 7.
+
+> `LLM_MODEL` and `apps/agent/.env.example` disagree (`claude-opus-4-7` vs
+> `claude-sonnet-4-6`), so which model runs depends on whether a `.env` is present.
 
 ---
 
@@ -300,14 +343,20 @@ all connector round-trips plus the analyst call; nothing streams until step 6.
 caller of the **compiled LangGraph**:
 
 ```
-START → planner → retriever → analyst → summarizer ─┬→ END
-                                                     └→ action → END  (action_required)
+START → planner → retriever → compute → analyst → summarizer ─┬→ END
+                                                               └→ action → END  (action_required)
 ```
 
 Same nodes, same order, one JSON response instead of a stream. Note that the conditional
-edge in [builder.py:12-13](../apps/agent/app/graph/builder.py#L12-L13) governs **only** this
+edge in [builder.py](../apps/agent/app/graph/builder.py) governs **only** this
 path — the SSE path calls the node functions directly and handles the action branch inline.
 The frontend never calls this endpoint; n8n does (§9).
+
+> ⚠️ **The pipeline is written out twice** — once as graph edges here, once as a sequence
+> of `await`s in `_stream_pipeline`. Adding a node to one and not the other silently skips
+> it for every real user, since the UI only ever calls the streaming endpoint.
+> `test_compute.py` pins both (`test_compiled_graph_includes_compute` and
+> `test_streaming_path_runs_compute_too`); extend that pair when adding a node.
 
 ---
 
@@ -435,4 +484,6 @@ rather than 400.
 | `_jwks()` uses sync `httpx.get` inside async middleware | [auth.py](../apps/agent/app/middleware/auth.py) | Blocks the event loop on the first request after boot |
 | Quota increments before the pipeline runs | [gating.py](../apps/agent/app/middleware/gating.py) | A query that fails at the connector or LLM still burns one of three free daily queries |
 | `/v1/webhooks/n8n` bypasses `GatingMiddleware` entirely | [gating.py](../apps/agent/app/middleware/gating.py) | Scheduled runs do not consume quota. Whether that is intended is still undecided |
-| Retrieval is lexical title matching, not RAG | [retriever.py](../apps/agent/app/graph/nodes/retriever.py) | See [PLAN.md](PLAN.md) Phase 10. The summarizer sees only the analyst's JSON, so it cannot cite |
+| Retrieval ranks provider search results lexically; there is still no embedding, chunking, or citation | [retriever.py](../apps/agent/app/graph/nodes/retriever.py) | See [PLAN.md](PLAN.md) Phase 10. The summarizer sees only the analyst's JSON, so it cannot cite a cell |
+| `compute_node` handles tabular sources only | [compute.py](../apps/agent/app/graph/nodes/compute.py) | A Gmail or Notion aggregation ("how many invoices did we send?") is still answered by the analyst reading a sample |
+| SQL is model-written and executed in-process | [compute.py](../apps/agent/app/graph/nodes/compute.py) | Mitigated by DuckDB's `enable_external_access=false` plus a single-`SELECT` check, both asserted in tests — but it is still generated code running in the API process |

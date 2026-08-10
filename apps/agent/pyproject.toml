@@ -38,6 +38,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "prometheus-fastapi-instrumentator>=7.0.0",
     "mcp>=1.9.0",
+    "duckdb>=1.5.5",
 ]
 
 [dependency-groups]

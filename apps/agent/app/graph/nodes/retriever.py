@@ -227,6 +227,11 @@ async def retriever_node(state: AgentState) -> dict:
                 trimmed, dropped = _trim(data, question, exhaustive)
                 entry: dict[str, Any] = {"source": name, "resource": resource, "data": trimmed}
                 if dropped:
+                    # `compute_node` needs every row to produce an exact total;
+                    # `data` is the sample the analyst reads. Only kept when the
+                    # two actually differ. `analyst._build_analysis_prompt`
+                    # picks named keys, so this never reaches a prompt.
+                    entry["full_data"] = data
                     # The analyst must know the dataset is partial — otherwise a
                     # "total" is reported as exact when it is not.
                     entry["omitted_items"] = dropped
@@ -247,4 +252,8 @@ async def retriever_node(state: AgentState) -> dict:
         sources=len(retrieved),
         question_type=question_type,
     )
-    return {"retrieved_data": retrieved, "next_node": "analyst"}
+    return {
+        "retrieved_data": retrieved,
+        "question_type": question_type,
+        "next_node": "compute",
+    }

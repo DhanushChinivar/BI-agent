@@ -11,6 +11,11 @@ from app.db.engine import get_session_factory
 _SHEET_MIME = "mimeType='application/vnd.google-apps.spreadsheet'"
 _PAGE_SIZE = 50
 _MAX_QUERY_TERMS = 5
+# Ceiling on a single read. High enough that ordinary business sheets arrive
+# whole — the previous 999-row clip lost a quarter of a year's transactions —
+# and low enough to bound the Redis payload and the in-memory frame.
+_MAX_READ_ROWS = 10_000
+_FALLBACK_RANGE = "A1:Z10000"
 
 
 def _escape(term: str) -> str:
@@ -57,9 +62,15 @@ class GoogleSheetsConnector:
         creds_data = await self._creds(user_id)
         creds = await get_google_credentials(user_id, self.name, creds_data)
         service = build("sheets", "v4", credentials=creds, cache_discovery=False)
-        range_name = kwargs.get("range", "A1:Z1000")
         try:
             meta = service.spreadsheets().get(spreadsheetId=resource_id).execute()
+            # Default to the first tab's *name* as the range, which returns every
+            # populated cell. The previous "A1:Z1000" silently dropped everything
+            # from row 1000 on — on an 1,800-row transaction log that is a whole
+            # quarter missing, with a total that still looks authoritative.
+            tabs = meta.get("sheets", [])
+            first_tab = tabs[0]["properties"]["title"] if tabs else _FALLBACK_RANGE
+            range_name = kwargs.get("range") or first_tab
             values_resp = (
                 service.spreadsheets()
                 .values()
@@ -70,17 +81,25 @@ class GoogleSheetsConnector:
             return {"error": str(exc), "resource_id": resource_id}
 
         rows = values_resp.get("values", [])
+        dropped = 0
         if rows:
             headers = rows[0]
-            data = [dict(zip(headers, row)) for row in rows[1:]]
+            body = rows[1:]
+            dropped = max(0, len(body) - _MAX_READ_ROWS)
+            # strict=False is deliberate: trailing empty cells make a row shorter
+            # than the header, and the short row is the one we want to keep.
+            data = [dict(zip(headers, row, strict=False)) for row in body[:_MAX_READ_ROWS]]
         else:
             data = []
 
-        return {
+        result = {
             "resource_id": resource_id,
             "title": meta.get("properties", {}).get("title", resource_id),
             "rows": data,
         }
+        if dropped:
+            result["truncated_rows"] = dropped
+        return result
 
     async def search(self, user_id: str, query: str) -> list[dict[str, Any]]:
         """Full-text search across the user's spreadsheets.

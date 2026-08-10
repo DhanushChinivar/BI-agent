@@ -4,15 +4,14 @@
  */
 import { auth } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
-import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
+import { stripeClient } from "@/lib/stripe";
 
 export async function POST() {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const session = await stripe.checkout.sessions.create({
+  const session = await stripeClient().checkout.sessions.create({
     mode: "subscription",
     line_items: [{ price: process.env.STRIPE_PRO_PRICE_ID!, quantity: 1 }],
     // Pass user_id so the webhook can look up the user

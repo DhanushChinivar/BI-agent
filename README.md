@@ -10,17 +10,22 @@ See [`docs/diagrams/architecture.md`](docs/diagrams/architecture.md) for the ful
 Browser → Next.js (Clerk auth) → FastAPI BFF proxy
                                       ↓
                              LangGraph pipeline
-                      planner → retriever → analyst → summarizer → [action_node]
-                                   ↓ (MCP client)                        ↓
-                            FastMCP connector server                    n8n
-                                   ↓
-                          Google Sheets / Gmail / Notion
+              planner → retriever → compute → analyst → summarizer → [action_node]
+                            ↓ (MCP client)    ↓                            ↓
+                     FastMCP connector server DuckDB                      n8n
+                            ↓
+                   Google Sheets / Gmail / Notion
 ```
 
 Connectors are exposed over the **Model Context Protocol (MCP)**: a FastMCP server
 publishes each connector's `list_resources` / `read` / `search` as MCP tools, and the
 retriever consumes them as an MCP client. OAuth remains the authorization layer that
 supplies per-user tokens — MCP is the transport/tool-discovery layer on top.
+
+Totals are **computed, not inferred**. On aggregation, trend, and comparison questions
+`compute_node` loads the untrimmed table into an in-memory DuckDB, asks Claude for a
+single `SELECT`, and executes it — so a sum covers every row rather than the sample the
+analyst can fit in a prompt. Other question types skip the node entirely.
 
 ## Stack
 
@@ -29,6 +34,7 @@ supplies per-user tokens — MCP is the transport/tool-discovery layer on top.
 | Frontend | Next.js 16, Tailwind CSS, Clerk |
 | Backend | FastAPI, LangGraph, Anthropic Claude |
 | Connectors | MCP (FastMCP server + client) over streamable-http |
+| Compute | DuckDB (in-memory, external access disabled) for exact aggregates |
 | Database | PostgreSQL 16 (credentials, plans, conversation history) |
 | Cache | Redis 7 (connector data, 5-min TTL) |
 | Automation | n8n (scheduled reports, data alerts) |

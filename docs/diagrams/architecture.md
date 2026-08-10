@@ -32,7 +32,8 @@ graph TD
 
         subgraph Graph ["LangGraph Pipeline"]
             Planner["planner_node\nDecomposes question"]
-            Retriever["retriever_node\nMCP calls + keyword filter"]
+            Retriever["retriever_node\nProvider search → rank → trim"]
+            Compute["compute_node\nSQL over full table (DuckDB)"]
             Analyst["analyst_node\nLLM analysis"]
             Summarizer["summarizer_node\nStreams answer"]
             Action["action_node\nTriggers n8n"]
@@ -82,9 +83,10 @@ graph TD
     Webhook --> Graph
 
     Planner -->|LLM call| Claude
+    Compute -->|"LLM call (SQL)<br/>tabular + aggregation only"| Claude
     Analyst -->|LLM call| Claude
     Summarizer -->|LLM stream| Claude
-    Planner --> Retriever --> Analyst --> Summarizer
+    Planner --> Retriever --> Compute --> Analyst --> Summarizer
     Summarizer -->|action_required| Action
     Action --> Workflows
     Workflows -->|n8n REST API| Automation
@@ -142,11 +144,13 @@ graph TD
 
 ## Known Architectural Gaps
 
-- **No RAG.** `retriever_node` reads every resource a connector exposes and keeps the rows with the highest keyword overlap (cap: 60 rows / 15 text chunks). There is no ingest step, no chunking, no embedding, no vector store, and no citations. See Phase 10 in [`docs/PLAN.md`](../PLAN.md).
+- **No RAG.** `retriever_node` now queries each provider's own search index and ranks the results by keyword overlap, but there is still no ingest step, no chunking, no embedding, no vector store, and no citations — a semantic match with no shared words is only found if the provider's index finds it. See Phase 10 in [`docs/PLAN.md`](../PLAN.md).
 - **OAuth state is in-process.** `app/api/oauth.py` holds pending flows in a module-level dict, so it does not survive a restart and breaks with more than one worker. Needs Redis before any multi-instance deploy.
 - **No CI and no deployment.** There is no `.github/` directory and no hosting target configured.
 - **`action_node` reports schedules it never created.** It patches the n8n workflow with tags and a caller policy but never writes the cron or the question, then returns `{"status": "scheduled"}`. The UI shows a confirmed schedule that does not exist. See [`docs/DATAFLOW.md`](../DATAFLOW.md#11-known-gaps).
-- **Retrieval is lexical.** `_select_resources` scores resource *titles* by keyword overlap and `_trim` scores rows the same way, so a semantic match with no shared words is unreachable. The candidate set is also capped upstream — Gmail lists only the 5 most recent threads. Each connector implements `search()` and exposes it as an MCP tool, but nothing calls it.
+- **Ranking is still lexical.** `_select_resources` scores resource *titles* by keyword overlap and `_trim` scores rows the same way. Provider search now supplies the candidates, so the old "5 most recent Gmail threads" ceiling is gone, but the ranking on top of it has no notion of meaning.
+- **`compute_node` covers tabular sources only.** An aggregation over Gmail or Notion ("how many invoices did we send?") is still answered by the analyst reading a sample.
+- **Model-written SQL executes in the API process.** DuckDB runs with `enable_external_access=false` and a single-`SELECT` check gates it, both asserted in `tests/unit/test_compute.py` — but it is generated code running in-process, not in a separate sandbox.
 
 > `AuthMiddleware` previously blanket-401'd every self-authenticating route under
 > `APP_ENV=production`. Fixed in `49a5cd9` and pinned by `tests/unit/test_auth.py`; the

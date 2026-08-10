@@ -76,6 +76,65 @@ async def test_search_skips_the_api_entirely_for_a_blank_query(drive):
     drive.files.assert_not_called()
 
 
+@pytest.fixture
+def sheets(monkeypatch):
+    """A stubbed Sheets client that records the range it was asked for."""
+    client = MagicMock()
+    client.spreadsheets.return_value.get.return_value.execute.return_value = {
+        "properties": {"title": "Sales"},
+        "sheets": [{"properties": {"title": "Sales Transactions"}}],
+    }
+    monkeypatch.setattr(google_sheets, "build", lambda *a, **k: client)
+    monkeypatch.setattr(
+        google_sheets, "get_google_credentials", AsyncMock(return_value=object())
+    )
+    monkeypatch.setattr(GoogleSheetsConnector, "_creds", AsyncMock(return_value={}))
+    return client
+
+
+def _values(client):
+    return client.spreadsheets.return_value.values.return_value.get
+
+
+def test_read_defaults_to_the_whole_first_tab(sheets):
+    """A fixed A1:Z1000 dropped every row past 999.
+
+    On an 1,800-row transaction sheet that silently removed a full quarter while
+    still returning a total that looked authoritative — the worst failure shape
+    for a BI agent.
+    """
+    _values(sheets).return_value.execute.return_value = {"values": [["a"], ["1"]]}
+
+    import asyncio
+    asyncio.run(GoogleSheetsConnector().read("u1", "sheet-1"))
+
+    assert _values(sheets).call_args.kwargs["range"] == "Sales Transactions"
+
+
+def test_read_caps_rows_and_reports_the_drop(sheets):
+    header = [["revenue"]]
+    body = [[str(i)] for i in range(google_sheets._MAX_READ_ROWS + 25)]
+    _values(sheets).return_value.execute.return_value = {"values": header + body}
+
+    import asyncio
+    result = asyncio.run(GoogleSheetsConnector().read("u1", "sheet-1"))
+
+    assert len(result["rows"]) == google_sheets._MAX_READ_ROWS
+    assert result["truncated_rows"] == 25
+
+
+def test_read_keeps_rows_with_trailing_empty_cells(sheets):
+    """Sheets omits trailing blanks, so a row can be shorter than the header."""
+    _values(sheets).return_value.execute.return_value = {
+        "values": [["month", "revenue", "note"], ["Oct", "100"]]
+    }
+
+    import asyncio
+    result = asyncio.run(GoogleSheetsConnector().read("u1", "sheet-1"))
+
+    assert result["rows"] == [{"month": "Oct", "revenue": "100"}]
+
+
 @pytest.mark.asyncio
 async def test_search_returns_readable_resources(drive):
     """Every id a search returns must be one `read` can resolve."""

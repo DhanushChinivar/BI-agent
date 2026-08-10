@@ -19,6 +19,7 @@ from app.db.history_crud import (
 from app.graph.builder import graph
 from app.graph.nodes.action import action_node
 from app.graph.nodes.analyst import analyst_node
+from app.graph.nodes.compute import compute_node
 from app.graph.nodes.planner import planner_node
 from app.graph.nodes.retriever import retriever_node
 from app.graph.nodes.summarizer import _SYSTEM as SUMMARIZER_SYSTEM
@@ -167,6 +168,10 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
         yield _sse("warning", {"connector": item["source"], "message": item["error"]})
 
     yield _sse("stage", {"stage": "analyzing", "message": "Analyzing results…"})
+    # compute runs under the "analyzing" stage rather than emitting one of its
+    # own: it is a no-op for most questions, and a new stage would need a
+    # matching case in the frontend's StageIndicator.
+    state.update(await compute_node(state))
     state.update(await analyst_node(state))
 
     yield _sse("stage", {"stage": "summarizing", "message": "Writing your answer…"})
