@@ -1,0 +1,39 @@
+# Build context excludes — both images build with `context: ../..` (repo root),
+# so everything here is measured against the repo root.
+#
+# Keeping node_modules/.next out is not just a speed win: web.Dockerfile does
+# `COPY apps/web ./` after installing deps, so a host-built (darwin) node_modules
+# would overwrite the alpine one from `npm ci`.
+
+# Dependencies and build output — regenerated inside the image
+**/node_modules
+**/.next
+**/out
+**/.venv
+**/venv
+**/__pycache__
+**/*.egg-info
+**/*.pyc
+
+# Secrets — supplied at runtime via compose `env_file:`, never baked into a layer
+**/.env
+**/.env.*
+!**/.env.example
+
+# VCS and tooling
+.git
+.gitignore
+.claude
+
+# Docker definitions themselves are never COPY'd
+infra/docker
+
+# Editor / OS cruft
+**/.DS_Store
+**/*.log
+**/*.tsbuildinfo
+
+# Docs and sample data — not used by either service at runtime
+docs
+README.md
+*.xlsx
