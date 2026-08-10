@@ -8,6 +8,24 @@ from app.connectors.google_auth import get_google_credentials
 from app.db.crud import get_credentials
 from app.db.engine import get_session_factory
 
+_SHEET_MIME = "mimeType='application/vnd.google-apps.spreadsheet'"
+_PAGE_SIZE = 50
+_MAX_QUERY_TERMS = 5
+
+
+def _escape(term: str) -> str:
+    """Escape a term for a Drive query string literal."""
+    return term.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _as_resource(f: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": f["id"],
+        "title": f["name"],
+        "type": "spreadsheet",
+        "modified": f.get("modifiedTime"),
+    }
+
 
 class GoogleSheetsConnector:
     name = "google_sheets"
@@ -27,16 +45,13 @@ class GoogleSheetsConnector:
         result = (
             drive.files()
             .list(
-                q="mimeType='application/vnd.google-apps.spreadsheet'",
+                q=_SHEET_MIME,
                 fields="files(id,name,modifiedTime)",
-                pageSize=50,
+                pageSize=_PAGE_SIZE,
             )
             .execute()
         )
-        return [
-            {"id": f["id"], "title": f["name"], "type": "spreadsheet", "modified": f.get("modifiedTime")}
-            for f in result.get("files", [])
-        ]
+        return [_as_resource(f) for f in result.get("files", [])]
 
     async def read(self, user_id: str, resource_id: str, **kwargs: Any) -> dict[str, Any]:
         creds_data = await self._creds(user_id)
@@ -68,6 +83,38 @@ class GoogleSheetsConnector:
         }
 
     async def search(self, user_id: str, query: str) -> list[dict[str, Any]]:
-        resources = await self.list_resources(user_id)
-        q = query.lower()
-        return [r for r in resources if q in r["title"].lower()]
+        """Full-text search across the user's spreadsheets.
+
+        Drive indexes cell contents, so this matches a sheet whose *data* is
+        relevant even when its title is not. The previous implementation
+        filtered the same 50-file listing by title substring, which no
+        multi-word query could ever match.
+
+        Terms are ANDed rather than passed as one string: in Drive,
+        `fullText contains 'a b'` is an exact-phrase match, so a multi-word
+        query has to be split to behave like a search. AND can still be too
+        strict — the retriever falls back to `list_resources` when this returns
+        nothing, which is the recall floor.
+        """
+        terms = query.split()[:_MAX_QUERY_TERMS]
+        if not terms:
+            return []
+
+        creds_data = await self._creds(user_id)
+        creds = await get_google_credentials(user_id, self.name, creds_data)
+        drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+        clauses = " and ".join(f"fullText contains '{_escape(t)}'" for t in terms)
+        try:
+            result = (
+                drive.files()
+                .list(
+                    q=f"{_SHEET_MIME} and {clauses}",
+                    fields="files(id,name,modifiedTime)",
+                    pageSize=_PAGE_SIZE,
+                )
+                .execute()
+            )
+        except HttpError as exc:
+            return [{"error": str(exc)}]
+
+        return [_as_resource(f) for f in result.get("files", [])]

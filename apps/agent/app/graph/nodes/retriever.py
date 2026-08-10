@@ -28,8 +28,29 @@ _PAYLOAD_CAPS = {"rows": _MAX_ROWS, "messages": _MAX_TEXT_CHUNKS}
 _EXHAUSTIVE_TYPES = {"aggregation", "trend", "comparison"}
 
 
+# Question words and filler that appear in nearly every query. Left in, they
+# score against unrelated titles on pure noise — a sheet called "What We Owe"
+# ties with "Q4 Sales 2024" for "What was our Q4 revenue?" on the word "what".
+_STOPWORDS = frozenset({
+    "about", "all", "also", "and", "any", "are", "as", "at", "be", "been", "but",
+    "by", "can", "could", "did", "do", "does", "each", "find", "for", "from",
+    "get", "give", "had", "has", "have", "here", "how", "if", "in", "into", "is",
+    "it", "its", "list", "many", "me", "most", "much", "my", "of", "on", "only",
+    "or", "our", "out", "over", "please", "show", "so", "some", "tell", "than",
+    "that", "the", "their", "then", "there", "these", "they", "this", "those",
+    "to", "us", "was", "we", "were", "what", "when", "where", "which", "who",
+    "why", "will", "with", "would", "you", "your",
+})
+
+
 def _keywords(text: str) -> set[str]:
-    return set(re.findall(r"\b\w{3,}\b", text.lower()))
+    """Content words in `text`, lowercased.
+
+    Two characters, not three: "Q4", "Q1", "FY", and two-letter product codes
+    are usually the most discriminating token in a BI question, and a 3-char
+    floor discarded every one of them before scoring ever happened.
+    """
+    return {w for w in re.findall(r"\b\w{2,}\b", text.lower()) if w not in _STOPWORDS}
 
 
 def _score_row(row: Any, kw: set[str]) -> int:
@@ -53,8 +74,12 @@ def _select_resources(resources: list[dict], question: str) -> list[dict]:
         (len(kw & _keywords(str(r.get("title") or r.get("name") or r))), i, r)
         for i, r in enumerate(resources)
     ]
-    matched = [entry for entry in scored if entry[0] > 0]
-    ranked = sorted(matched, key=lambda e: (-e[0], e[1])) if matched else scored
+    # Rank every resource, not just the ones that matched. _MAX_RESOURCES is a
+    # budget, not a filter: a single weak title match should still fill it with
+    # the next-best candidates rather than reading one file and stopping.
+    # Unmatched entries score 0 and sort last in listing order, which preserves
+    # the documented "nothing matched -> take the first few" fallback.
+    ranked = sorted(scored, key=lambda e: (-e[0], e[1]))
     return [r for _, _, r in ranked[:_MAX_RESOURCES]]
 
 
@@ -96,6 +121,55 @@ def _trim(data: Any, question: str, exhaustive: bool) -> tuple[Any, int]:
     return data, 0
 
 
+def _search_query(question: str) -> str:
+    """Connector-side search string derived from the question's content words.
+
+    Sorted for determinism. The planner could emit a better query, but deriving
+    it here keeps search working even when the planner's JSON fails to parse.
+    """
+    return " ".join(sorted(_keywords(question)))
+
+
+def _usable(resources: Any) -> list[dict]:
+    """Drop entries a connector emitted in place of raising.
+
+    Connectors surface API failures as `[{"error": ...}]` rather than throwing,
+    and those entries carry no `id` for `read` to resolve.
+    """
+    if not isinstance(resources, list):
+        return []
+    return [r for r in resources if isinstance(r, dict) and r.get("id")]
+
+
+async def _candidates(connector: str, user_id: str, question: str, bound: Any) -> list[dict]:
+    """Resources worth ranking, best-first.
+
+    `list_resources` is bounded by the connector's own paging — Gmail lists only
+    the 5 most recent threads — so anything older is unreachable from the
+    listing no matter how good the ranking is. Every connector also implements
+    `search`, which delegates to the provider's own index (Gmail's query API,
+    Notion's `/search`).
+
+    Search leads; the listing is the fallback when search finds nothing. That
+    matters for Sheets, whose `search` is a substring match over the same
+    listing and so returns nothing for any multi-word query. Falling back rather
+    than merging also avoids Gmail's N+1 listing cost on the common path.
+    """
+    query = _search_query(question)
+    if query:
+        try:
+            found = _usable(await mcp_client.search(connector, user_id, query))
+        except Exception as exc:
+            # A failed search must not fail the connector — fall through.
+            bound.warning("search_failed", connector=connector, error=str(exc))
+            found = []
+        if found:
+            bound.info("search_hit", connector=connector, query=query, results=len(found))
+            return found
+
+    return await mcp_client.list_resources(connector, user_id)
+
+
 def _parse_plan_meta(plan: list[str]) -> tuple[list[str], str]:
     """Extract connector names and question_type encoded by the planner."""
     connectors: list[str] = []
@@ -131,7 +205,7 @@ async def retriever_node(state: AgentState) -> dict:
     retrieved: list[dict[str, Any]] = []
     for name in active:
         try:
-            resources = await mcp_client.list_resources(name, user_id)
+            resources = await _candidates(name, user_id, question, bound)
             selected = _select_resources(resources, question)
             if len(selected) < len(resources):
                 bound.info(

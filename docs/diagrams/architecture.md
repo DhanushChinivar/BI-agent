@@ -145,4 +145,9 @@ graph TD
 - **No RAG.** `retriever_node` reads every resource a connector exposes and keeps the rows with the highest keyword overlap (cap: 60 rows / 15 text chunks). There is no ingest step, no chunking, no embedding, no vector store, and no citations. See Phase 10 in [`docs/PLAN.md`](../PLAN.md).
 - **OAuth state is in-process.** `app/api/oauth.py` holds pending flows in a module-level dict, so it does not survive a restart and breaks with more than one worker. Needs Redis before any multi-instance deploy.
 - **No CI and no deployment.** There is no `.github/` directory and no hosting target configured.
-- **`AuthMiddleware` blanket-401s unauthenticated routes in production.** It has no exempt-path set, so with `APP_ENV=production` the OAuth callbacks, Stripe webhook, n8n webhook, `/health`, and `/metrics` all return 401 before their own signature checks run. Verified, with the full table, in [`docs/DATAFLOW.md`](../DATAFLOW.md#11-known-breaks-in-production).
+- **`action_node` reports schedules it never created.** It patches the n8n workflow with tags and a caller policy but never writes the cron or the question, then returns `{"status": "scheduled"}`. The UI shows a confirmed schedule that does not exist. See [`docs/DATAFLOW.md`](../DATAFLOW.md#11-known-gaps).
+- **Retrieval is lexical.** `_select_resources` scores resource *titles* by keyword overlap and `_trim` scores rows the same way, so a semantic match with no shared words is unreachable. The candidate set is also capped upstream — Gmail lists only the 5 most recent threads. Each connector implements `search()` and exposes it as an MCP tool, but nothing calls it.
+
+> `AuthMiddleware` previously blanket-401'd every self-authenticating route under
+> `APP_ENV=production`. Fixed in `49a5cd9` and pinned by `tests/unit/test_auth.py`; the
+> remaining gaps are tracked in [`docs/DATAFLOW.md`](../DATAFLOW.md#11-known-gaps).

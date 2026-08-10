@@ -82,12 +82,22 @@ class NotionConnector:
     async def search(self, user_id: str, query: str) -> list[dict[str, Any]]:
         token = await self._token(user_id)
         async with self._client(token) as client:
-            resp = await client.post("/search", json={"query": query, "page_size": 10})
+            # Filter to pages, as `list_resources` does: `read` resolves a
+            # resource with /pages/{id}, so an unfiltered search returning a
+            # database would hand back an id that cannot be read.
+            resp = await client.post(
+                "/search",
+                json={
+                    "query": query,
+                    "filter": {"value": "page", "property": "object"},
+                    "page_size": 10,
+                },
+            )
             if resp.status_code != 200:
                 return [{"error": resp.text}]
             results = resp.json().get("results", [])
 
         return [
-            {"id": r["id"], "title": _extract_title(r) or "(untitled)", "type": r["object"], "url": r.get("url", "")}
+            {"id": r["id"], "title": _extract_title(r) or "(untitled)", "type": "notion_page", "url": r.get("url", "")}
             for r in results
         ]

@@ -92,15 +92,24 @@ class GmailConnector:
         except HttpError as exc:
             return [{"error": str(exc)}]
 
-        resources = []
+        # Return *thread* ids, not message ids: `read` resolves a resource with
+        # threads().get(), so a message id 404s there. Gmail's search matches
+        # per message, so several hits can share a thread — dedupe, keeping
+        # relevance order.
+        resources: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for msg in result.get("messages", []):
             m = service.users().messages().get(userId="me", id=msg["id"], format="metadata").execute()
+            thread_id = m.get("threadId", msg["id"])
+            if thread_id in seen:
+                continue
+            seen.add(thread_id)
             headers = m.get("payload", {}).get("headers", [])
             resources.append({
-                "id": msg["id"],
+                "id": thread_id,
                 "title": _header(headers, "Subject") or "(no subject)",
                 "from": _header(headers, "From"),
                 "date": _header(headers, "Date"),
-                "type": "gmail_message",
+                "type": "gmail_thread",
             })
         return resources

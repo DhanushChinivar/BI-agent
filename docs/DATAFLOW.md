@@ -1,6 +1,6 @@
 # Data & API Flows
 
-> Last updated: 2026-07-28. Traced against the code, not the design docs — where
+> Last updated: 2026-08-10. Traced against the code, not the design docs — where
 > the two disagree, this file follows the code. Line references are links.
 >
 > **Rendered version with full swimlane diagrams:**
@@ -23,8 +23,8 @@ crosses which trust boundary, where data is stored, and how each step fails.
 | 9 | [A scheduled report fires](#9-a-scheduled-report-fires-n8n--agent) | `POST /v1/webhooks/n8n` |
 | 10 | [Health & metrics](#10-health--metrics) | `/health`, `/metrics` |
 
-**Read [§11 Known breaks](#11-known-breaks-in-production) before deploying** — several
-flows below work in development and return 401 in production.
+**Read [§11 Known gaps](#11-known-gaps) before deploying** — the production-401 problem
+that used to head this section is fixed; what remains is listed there.
 
 ---
 
@@ -46,12 +46,21 @@ request
 
 **AuthMiddleware** ([auth.py:44-62](../apps/agent/app/middleware/auth.py#L44-L62)):
 
-1. Reads `Authorization: Bearer <token>`.
-2. If present → fetches Clerk's JWKS (cached via `@lru_cache`, so **key rotation needs a
+1. If the path is exempt (`_is_exempt`) → sets `user_id = "system"` and passes straight
+   through. Exempt: `/health`, `/metrics`, `/v1/stripe/webhook`, `/v1/webhooks/n8n`, and
+   `/v1/oauth/*/callback`. Each of those authenticates by its own mechanism — OAuth
+   `state`, Stripe signature, HMAC — and never carries a JWT. **`/v1/oauth/*/start` is
+   deliberately not exempt**: it binds the flow to an identity.
+2. Reads `Authorization: Bearer <token>`.
+3. If present → fetches Clerk's JWKS (cached via `@lru_cache`, so **key rotation needs a
    service restart**), matches `kid`, verifies RS256, sets `request.state.user_id` from
    the `sub` claim. Invalid token → **401**.
-3. If absent and `APP_ENV=production` → **401**.
-4. If absent otherwise → dev fallback: trusts the `X-User-Id` header, else `anonymous`.
+4. If absent and `APP_ENV=production` → **401**.
+5. If absent otherwise → dev fallback: trusts the `X-User-Id` header, else `anonymous`.
+
+> The JWT signature is verified, but **no `audience` or `issuer` claim is checked**
+> ([auth.py](../apps/agent/app/middleware/auth.py)) — any token minted by the configured
+> Clerk instance is accepted regardless of what it was issued for.
 
 > Every downstream handler reads `request.state.user_id` and **never** a `user_id` query
 > param. That was the Phase 9 identity-spoofing fix — a query param would let any caller
@@ -189,7 +198,12 @@ back so nothing buffers the stream.
 
 [query.py:120-132](../apps/agent/app/api/query.py#L120-L132):
 
-- New conversation → `uuid4()`. Existing → last **10** messages loaded as context.
+- New conversation → `uuid4()`. Existing → `_assert_conversation_owned` runs **first** and
+  returns **404** unless the id belongs to the verified user; only then are the last **10**
+  messages loaded as context. `_load_history` re-checks ownership and returns `[]` on a
+  miss, so a foreign thread's messages are never even fetched.
+- The check lives in the route, not in `_stream_pipeline` — raising inside an
+  `EventSourceResponse` generator breaks the stream instead of returning a clean 404.
 - `_ensure_conversation` creates the row with a placeholder title (the question, truncated
   to 60 chars).
 
@@ -387,30 +401,38 @@ Structured logs come from `structlog` — JSON in production, coloured console i
 
 ---
 
-## 11. Known breaks in production
+## 11. Known gaps
 
-**`AuthMiddleware` has no path exemptions.** It runs on *every* request and returns 401
-when `APP_ENV=production` and no `Authorization: Bearer` header is present
-([auth.py:56-57](../apps/agent/app/middleware/auth.py#L56-L57)). These callers never send
-one:
+### Fixed in `49a5cd9`
 
-Verified against a `TestClient` with `APP_ENV=production` and the three required secrets set:
+`AuthMiddleware` had no path exemptions, so every caller that authenticates by its own
+mechanism returned 401 under `APP_ENV=production`: `/health`, `/metrics`,
+`/v1/oauth/*/callback`, `/v1/stripe/webhook`, `/v1/webhooks/n8n`. Now covered by
+`_is_exempt` (§0) and pinned by `tests/unit/test_auth.py`, which asserts both halves —
+exempt routes reach their handler, everything else still 401s.
 
-| Route | Caller | dev | production | Consequence |
-|---|---|---|---|---|
-| `/health` | Load balancer / healthcheck | 200 | **401** | Instance marked unhealthy |
-| `/metrics` | Prometheus | 200 | **401** | No metrics |
-| `/v1/oauth/*/callback` | Google/Notion browser redirect | reaches route | **401** | OAuth can never complete |
-| `/v1/stripe/webhook` | Stripe (`stripe-signature`) | reaches route | **401** | Upgrades never apply |
-| `/v1/webhooks/n8n` | n8n (`x-hub-signature-256`) | 401 *(HMAC)* | **401** *(auth)* | Scheduled reports fail |
+Two things had kept it hidden, and both are worth remembering as a testing lesson: the dev
+branch falls through to `anonymous`, so nothing failed locally; and the n8n route returns
+**401 in both environments** — for HMAC in dev, for auth in production — so an integration
+test asserting `401` on an unsigned request passed either way. The test now asserts on the
+**response body** (`"Invalid webhook signature"` vs `"Unauthorized"`), which is the only
+thing that distinguishes the two.
 
-Each of these already authenticates by its own mechanism — OAuth `state`, Stripe signature,
-HMAC — so the fix is an exempt-path set inside `AuthMiddleware`, not a weaker default.
+Also fixed in the same commit: `_load_history` loaded any conversation by id with no
+ownership check (§3), and the Stripe webhook caught `stripe.errors.SignatureVerificationError`
+— a name that does not exist in the pinned release, so a forged signature returned **500**
+rather than 400.
 
-Two reasons it has stayed hidden: the dev branch falls through to `anonymous`, so nothing
-fails locally; and the n8n route returns **401 in both environments** — for HMAC in dev, for
-auth in production — so even an integration test asserting `401` on an unsigned request
-passes in both, while the signed request that should return 200 only fails in production.
+### Still open
 
-**Other items** tracked in [PLAN.md](PLAN.md) → *Other Remaining Work*: in-process OAuth
-state (§2), no citations from the summarizer (§3), quota consumed by failed queries (§0).
+| Gap | Where | Impact |
+|---|---|---|
+| `action_node` never writes the cron or question into the workflow, but returns `{"status": "scheduled"}` | [action.py](../apps/agent/app/graph/nodes/action.py) | "Email me this every Monday" reports success and schedules nothing. The n8n endpoints it calls (`PATCH /workflows/{id}`, `POST /workflows/{id}/run`) also need verifying against the public API |
+| OAuth `state` lives in a module-level dict | [oauth.py](../apps/agent/app/api/oauth.py) | Lost on restart; breaks with >1 worker. Blocks any multi-instance deploy |
+| No `audience` / `issuer` claim check on the JWT | [auth.py](../apps/agent/app/middleware/auth.py) | Any token from the configured Clerk instance is accepted |
+| Notion's `content` is never trimmed — `_PAYLOAD_CAPS` covers `rows` and `messages` only | [retriever.py](../apps/agent/app/graph/nodes/retriever.py) | One long page enters the analyst prompt whole |
+| `cache_invalidate` is never called | [cache.py](../apps/agent/app/cache.py) | Disconnecting a connector leaves data readable until the 5-min TTL expires. Also uses `KEYS`, which blocks Redis |
+| `_jwks()` uses sync `httpx.get` inside async middleware | [auth.py](../apps/agent/app/middleware/auth.py) | Blocks the event loop on the first request after boot |
+| Quota increments before the pipeline runs | [gating.py](../apps/agent/app/middleware/gating.py) | A query that fails at the connector or LLM still burns one of three free daily queries |
+| `/v1/webhooks/n8n` bypasses `GatingMiddleware` entirely | [gating.py](../apps/agent/app/middleware/gating.py) | Scheduled runs do not consume quota. Whether that is intended is still undecided |
+| Retrieval is lexical title matching, not RAG | [retriever.py](../apps/agent/app/graph/nodes/retriever.py) | See [PLAN.md](PLAN.md) Phase 10. The summarizer sees only the analyst's JSON, so it cannot cite |
