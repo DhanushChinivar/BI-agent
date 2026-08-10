@@ -326,14 +326,11 @@ plain rendering of the insights.
 
 ### Cost and latency profile
 
-Four Claude calls per question, all on `LLM_MODEL` (default `claude-opus-4-7`, $5/$25 per
-MTok) — including the ~20-token title call. A **fifth** is added on aggregation, trend, and
-comparison questions over tabular data, where `compute_node` writes the SQL; every other
-question type skips it. Time to first token spans the planner call plus all connector
-round-trips plus compute plus the analyst call; nothing streams until step 7.
-
-> `LLM_MODEL` and `apps/agent/.env.example` disagree (`claude-opus-4-7` vs
-> `claude-sonnet-4-6`), so which model runs depends on whether a `.env` is present.
+Four Claude calls per question, all on `LLM_MODEL` (default `claude-sonnet-5`) — including
+the ~20-token title call. A **fifth** is added on aggregation, trend, and comparison
+questions over tabular data, where `compute_node` writes the SQL; every other question type
+skips it. Time to first token spans the planner call plus all connector round-trips plus
+compute plus the analyst call; nothing streams until step 7.
 
 ---
 
@@ -407,34 +404,55 @@ expire on their own TTL.
 
 ---
 
-## 8. Schedule a report (agent → n8n)
+## 8. Schedule a report (agent → Postgres)
 
 Triggered when the planner sets `action` on a question like *"email me this every Monday"*.
 
-1. `action_node` maps `action_type` → workflow name (`schedule_report` → `scheduled_report`,
-   `data_alert` → `data_change_alert`).
-2. `GET /api/v1/workflows` on n8n (header `X-N8N-API-KEY`), matched **by name**. Not found →
-   `{"status": "error", "reason": "... run import.sh first"}`.
-3. The workflow is patched with the cron/question and set `active: true`.
-4. The SSE layer emits `event: schedule` on success, `event: warning` on failure.
+**Postgres is the source of truth for schedules, not n8n.** n8n holds exactly one workflow —
+a ticker — and knows nothing about which reports exist.
 
-No API key configured → `{"status": "skipped"}`; the answer is still returned.
+1. `action_node` ([action.py](../apps/agent/app/graph/nodes/action.py)) validates
+   `action_type` against `{schedule_report, data_alert}` and requires a signed-in user: a
+   schedule with no owner has nobody to deliver to and nobody to bill.
+2. The question falls back to the current turn (*"run that every Monday"* carries none of its
+   own); the cron falls back to `0 8 * * 1`.
+3. `upsert_schedule` writes a `scheduled_reports` row, computing `next_run_at` with
+   `croniter`. Keyed on (user, question), so asking twice updates rather than duplicates.
+4. An unparseable cron is **reported**, never silently replaced — rewriting the user's
+   schedule to a default is how you end up emailing someone at the wrong time forever.
+5. The SSE layer emits `event: schedule` carrying the stored `next_run_at`, so the
+   confirmation quotes a figure that came back out of the database.
+
+Users can also manage schedules directly: `GET/POST /v1/schedules`,
+`DELETE /v1/schedules/{id}` — all scoped to the verified Clerk identity.
+
+> **What this replaced.** `action_node` used to PATCH the n8n workflow with `{"active": true}`
+> plus a copy of its own tags — the cron and question were written nowhere — then POST to
+> `/api/v1/workflows/{id}/run`, which is not part of n8n's public API. It returned
+> `{"status": "scheduled"}` either way, so the UI confirmed a schedule that never existed.
+> The deeper problem was that both workflow JSONs read their question and schedule from
+> instance-level `$env`/`$vars`, so a deployment had **one global schedule**, not one per user.
 
 ---
 
 ## 9. A scheduled report fires (n8n → agent)
 
-1. n8n's cron trigger fires and POSTs to `/v1/webhooks/n8n`.
-2. The body is HMAC-SHA256 verified against `WEBHOOK_SECRET`, compared with
-   `hmac.compare_digest`, expecting `x-hub-signature-256: sha256=<hex>`. Mismatch → **401**.
-3. `question` is required (**400** if absent); `user_id` defaults to `anonymous`, and
-   `conversation_id` to a fresh UUID.
-4. **`graph.ainvoke()`** runs the full pipeline — the non-streaming path, so the answer is
-   returned in one response for n8n to email.
+1. The `schedule_ticker` workflow fires every 5 minutes and POSTs to
+   `/v1/schedules/run-due`, signed with `WEBHOOK_SECRET`. Unsigned → **401**: the route runs
+   LLM work on behalf of arbitrary users, so an open caller could drain every account's quota.
+2. `claim_due` selects active rows with `next_run_at <= now()` `FOR UPDATE SKIP LOCKED` and
+   advances `next_run_at` **before** running anything. Two overlapping ticks therefore cannot
+   both claim the same report and email the user twice. A row whose cron stops parsing is
+   deactivated rather than left permanently due.
+3. Each claimed row charges **its own owner's** quota, then runs `graph.ainvoke()`. A failure
+   refunds the quota and records `last_status="error"` with the message.
+4. The response lists one result per schedule; the ticker filters to `status == "ok"` and
+   emails the answers.
 
-> This route reaches the pipeline **without passing GatingMiddleware's quota check**
-> (it gates only `/v1/query*`), so scheduled runs do not consume the daily allowance.
-> Whether that is intended is worth deciding explicitly.
+`/v1/webhooks/n8n` still exists for ad-hoc inbound questions and now charges the payload's
+user before running. Neither route can be metered by `GatingMiddleware` — both are
+auth-exempt, so at middleware time `request.state.user_id` is the placeholder `"system"`, and
+charging that would bill every user's reports to one shared counter.
 
 ---
 
@@ -472,18 +490,26 @@ ownership check (§3), and the Stripe webhook caught `stripe.errors.SignatureVer
 — a name that does not exist in the pinned release, so a forged signature returned **500**
 rather than 400.
 
+### Fixed in the scheduling + hardening pass
+
+| Was | Now |
+|---|---|
+| `action_node` returned `{"status": "scheduled"}` having written the cron and question nowhere, and called `POST /workflows/{id}/run`, which is not in n8n's public API. Both workflow JSONs read their schedule from instance-level `$env`/`$vars`, so a deployment had one global schedule | Schedules are `scheduled_reports` rows in Postgres. One n8n ticker calls `/v1/schedules/run-due`; claiming is `FOR UPDATE SKIP LOCKED` and advances `next_run_at` before running, so overlapping ticks cannot double-send (§8, §9) |
+| OAuth `state` lived in a module-level dict | Redis, single-use via `GETDEL`, with a 10-minute expiry. `flow.fetch_token` also moved off the event loop |
+| No `issuer` check on the JWT; `_jwks()` used sync `httpx.get` inside async middleware and cached for the process lifetime | `iss` verified against the configured Clerk origin; `aud` enforced when `CLERK_JWT_AUDIENCE` is set (python-jose accepts a *missing* `aud` even when one is configured, so presence is checked explicitly). JWKS is fetched async, TTL-cached, and refetched once on an unknown `kid` so key rotation no longer needs a restart |
+| Notion's `content` was never trimmed, and `_trim` returned after the first matching key | Free text is capped at `_MAX_TEXT_CHARS` by paragraph — relevance-ranked, then restored to document order — and every payload key is capped, not just the first |
+| `cache_invalidate` had no callers and used `KEYS` | Called on connector disconnect, iterating with `SCAN` in batches. Without it, a user's rows and email bodies stayed readable for the full 5-minute TTL after they disconnected |
+| Quota was charged before the pipeline and never refunded | Refunded on 5xx, on an unhandled exception, and — for the streaming path, which is already 200 by the time it can fail — from inside a `_guarded_stream` wrapper that also emits an `error` event so the UI stops waiting forever |
+| `/v1/webhooks/n8n` ran the pipeline free | Charges the payload's user in the handler, and refunds on failure |
+| `LLM_MODEL` disagreed between `settings.py` and `.env.example`; Gmail's docstring claimed 20 threads while the code fetched 5 | Both reconciled |
+| `response.content[0].text` assumed non-empty content whose first block is text | `_text_of` concatenates text blocks and raises `EmptyCompletionError` carrying `stop_reason`; the planner and analyst treat it as a parse failure and fall back |
+
 ### Still open
 
 | Gap | Where | Impact |
 |---|---|---|
-| `action_node` never writes the cron or question into the workflow, but returns `{"status": "scheduled"}` | [action.py](../apps/agent/app/graph/nodes/action.py) | "Email me this every Monday" reports success and schedules nothing. The n8n endpoints it calls (`PATCH /workflows/{id}`, `POST /workflows/{id}/run`) also need verifying against the public API |
-| OAuth `state` lives in a module-level dict | [oauth.py](../apps/agent/app/api/oauth.py) | Lost on restart; breaks with >1 worker. Blocks any multi-instance deploy |
-| No `audience` / `issuer` claim check on the JWT | [auth.py](../apps/agent/app/middleware/auth.py) | Any token from the configured Clerk instance is accepted |
-| Notion's `content` is never trimmed — `_PAYLOAD_CAPS` covers `rows` and `messages` only | [retriever.py](../apps/agent/app/graph/nodes/retriever.py) | One long page enters the analyst prompt whole |
-| `cache_invalidate` is never called | [cache.py](../apps/agent/app/cache.py) | Disconnecting a connector leaves data readable until the 5-min TTL expires. Also uses `KEYS`, which blocks Redis |
-| `_jwks()` uses sync `httpx.get` inside async middleware | [auth.py](../apps/agent/app/middleware/auth.py) | Blocks the event loop on the first request after boot |
-| Quota increments before the pipeline runs | [gating.py](../apps/agent/app/middleware/gating.py) | A query that fails at the connector or LLM still burns one of three free daily queries |
-| `/v1/webhooks/n8n` bypasses `GatingMiddleware` entirely | [gating.py](../apps/agent/app/middleware/gating.py) | Scheduled runs do not consume quota. Whether that is intended is still undecided |
 | Retrieval ranks provider search results lexically; there is still no embedding, chunking, or citation | [retriever.py](../apps/agent/app/graph/nodes/retriever.py) | See [PLAN.md](PLAN.md) Phase 10. The summarizer sees only the analyst's JSON, so it cannot cite a cell |
+| `list_resources` on Gmail is N+1 | [gmail.py](../apps/agent/app/connectors/gmail.py) | The list response carries no subject, so each thread costs its own `threads().get()`. Capped at 8 to bound the latency rather than batched |
+| No CI, no deployment target | — | Tests and lint run only locally |
 | `compute_node` handles tabular sources only | [compute.py](../apps/agent/app/graph/nodes/compute.py) | A Gmail or Notion aggregation ("how many invoices did we send?") is still answered by the analyst reading a sample |
 | SQL is model-written and executed in-process | [compute.py](../apps/agent/app/graph/nodes/compute.py) | Mitigated by DuckDB's `enable_external_access=false` plus a single-`SELECT` check, both asserted in tests — but it is still generated code running in the API process |

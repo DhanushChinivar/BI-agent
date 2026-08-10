@@ -141,18 +141,19 @@ editor is part of the demo story. Recorded in `docs/adr/0002-scheduling-backend.
 The apscheduler path below is retained as the documented alternative, not as pending work.
 
 ### Completed Tasks (n8n path)
-- [x] **Settings** — `N8N_BASE_URL`, `N8N_API_KEY`, `WEBHOOK_SECRET` in `app/config/settings.py`
+- [x] **Settings** — `WEBHOOK_SECRET` in `app/config/settings.py`. The agent no longer calls n8n's API, so it needs no `N8N_API_KEY`; the import script reads one from the shell
 - [x] **Inbound webhook** — `POST /v1/webhooks/n8n` (`app/api/n8n_webhooks.py`) — HMAC-verified, routes event to pipeline
-- [x] **Outbound trigger** — `POST /v1/workflows/trigger` (`app/api/workflows.py`) — calls the n8n REST API
-- [x] **LangGraph action node** — `app/graph/nodes/action.py`; planner emits an action step when the question implies scheduling
-- [x] **n8n workflow JSONs** — `apps/n8n/workflows/scheduled_report.json`, `apps/n8n/workflows/data_change_alert.json` (mirrored in `infra/n8n/workflows/`)
-- [x] **Import script** — `apps/n8n/import.sh` + `make import-workflows`
+- [x] **Ticker endpoint** — `POST /v1/schedules/run-due` (`app/api/schedules.py`) — HMAC-verified, claims due rows `FOR UPDATE SKIP LOCKED` and runs each through the pipeline. Replaced `POST /v1/workflows/trigger`, which called an n8n endpoint that does not exist in the public API
+- [x] **LangGraph action node** — `app/graph/nodes/action.py`; planner emits an action step when the question implies scheduling. Writes a `scheduled_reports` row (migration `0004`) and reports the stored `next_run_at`
+- [x] **n8n workflow JSON** — `infra/n8n/workflows/schedule_ticker.json`, the single source of truth. The two earlier workflows were deleted: each read its question and schedule from instance-level `$env`/`$vars`, giving a deployment one global schedule, and the `apps/n8n/` mirror had silently diverged from `infra/n8n/`
+- [x] **Import script** — `apps/agent/scripts/import_workflows.sh` + `make import-workflows`, which now also activates each workflow (an imported-but-inactive schedule trigger never fires)
 - [x] **Schedule confirmation UI** — chat surfaces the workflow the agent created
 
-### Not taken: apscheduler path
-Kept for reference only — revisit if n8n's hosting cost stops being worth the visual editor.
-- `apscheduler>=3.10`, `app/scheduler.py` with `AsyncIOScheduler` in the FastAPI lifespan
-- `POST/GET/DELETE /v1/schedules` + a `schedules` table (`user_id`, `cron`, `question`, `delivery`)
+### Partly adopted: the apscheduler path's data model
+n8n stayed as the executor, but the state model from the apscheduler option was taken:
+`POST/GET/DELETE /v1/schedules` and a `scheduled_reports` table (`user_id`, `cron`,
+`question`, `next_run_at`, `last_status`) now exist. What n8n contributes is the tick and
+the email delivery — not the schedule itself. See `docs/adr/0002-scheduling-backend.md`.
 
 ---
 

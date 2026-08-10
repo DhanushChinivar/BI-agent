@@ -7,8 +7,11 @@ import uuid
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from app.config.settings import get_settings
+from app.db.engine import get_session_factory
+from app.db.plan_crud import check_and_increment
 from app.graph.builder import graph
 from app.graph.state import AgentState
+from app.middleware.gating import refund
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["n8n"])
@@ -48,12 +51,27 @@ async def n8n_webhook(
 
     logger.info("n8n webhook received question for user=%s conversation=%s", user_id, conversation_id)
 
-    initial_state: AgentState = {
-        "messages": [{"role": "human", "content": question}],
-        "user_id": user_id,
-        "conversation_id": conversation_id,
-    }
-    final_state = await graph.ainvoke(initial_state)
+    # This runs the identical pipeline as /v1/query and costs the same LLM calls,
+    # but GatingMiddleware cannot meter it: the route is auth-exempt, so at
+    # middleware time `request.state.user_id` is "system", not the person the
+    # report belongs to. Charge the payload's user here instead — otherwise a
+    # free-plan user could schedule their way past the daily limit entirely.
+    factory = get_session_factory()
+    async with factory() as session:
+        allowed, reason = await check_and_increment(session, user_id)
+    if not allowed:
+        raise HTTPException(status_code=402, detail=reason)
+
+    try:
+        initial_state: AgentState = {
+            "messages": [{"role": "human", "content": question}],
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+        }
+        final_state = await graph.ainvoke(initial_state)
+    except Exception:
+        await refund(user_id, "n8n webhook pipeline failed")
+        raise
 
     return {
         "conversation_id": conversation_id,

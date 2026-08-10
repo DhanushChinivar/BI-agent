@@ -9,7 +9,9 @@ export interface Message {
   content: string;
   conversationId?: string;
   warnings?: string[];
-  scheduled?: { workflow: string; cron: string };
+  scheduled?: { workflow: string; cron: string; nextRunAt?: string };
+  /** The pipeline errored before finishing this answer. */
+  failed?: boolean;
 }
 
 export function useAgentStream() {
@@ -66,7 +68,18 @@ export function useAgentStream() {
           try {
             const payload = JSON.parse(raw);
 
-            if (payload.stage) {
+            if (payload.error) {
+              // The pipeline failed mid-stream. Checked first: without it the
+              // socket just closed and the UI sat on the last stage forever.
+              setMessages((prev) => {
+                const next = [...prev];
+                const last = next[next.length - 1];
+                if (last.role === "assistant") {
+                  next[next.length - 1] = { ...last, content: last.content || payload.error, failed: true };
+                }
+                return next;
+              });
+            } else if (payload.stage) {
               setStage(payload.stage as Stage);
             } else if (payload.status === "scheduled") {
               setMessages((prev) => {
@@ -75,7 +88,11 @@ export function useAgentStream() {
                 if (last.role === "assistant") {
                   next[next.length - 1] = {
                     ...last,
-                    scheduled: { workflow: payload.workflow, cron: payload.cron },
+                    scheduled: {
+                      workflow: payload.workflow,
+                      cron: payload.cron,
+                      nextRunAt: payload.next_run_at,
+                    },
                   };
                 }
                 return next;

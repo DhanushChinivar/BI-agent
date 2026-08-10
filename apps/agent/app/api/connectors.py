@@ -1,7 +1,8 @@
 """GET /v1/connectors/status — reports connected state per connector."""
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from sqlalchemy import select
 
+from app.cache import cache_invalidate
 from app.connectors import REGISTRY
 from app.db.engine import get_session_factory
 from app.db.models import UserConnectorCredential
@@ -45,6 +46,9 @@ async def disconnect_connector(connector_name: str, request: Request) -> dict:
     # Verified identity only — otherwise a caller could disconnect another
     # user's sources by passing ?user_id=victim.
     user_id = request.state.user_id
+    if connector_name not in REGISTRY:
+        raise HTTPException(status_code=404, detail=f"Unknown connector: {connector_name}")
+
     factory = get_session_factory()
     async with factory() as session:
         row = await session.scalar(
@@ -56,4 +60,15 @@ async def disconnect_connector(connector_name: str, request: Request) -> dict:
         if row:
             await session.delete(row)
             await session.commit()
-    return {"connector": connector_name, "disconnected": True}
+
+    # Deleting the credential revokes future reads but not past ones: connector
+    # payloads live in Redis for `_TTL`, so without this the user's spreadsheet
+    # rows and email bodies stay readable for five minutes after they
+    # disconnected. `cache_invalidate` existed for exactly this and had no callers.
+    cleared = await cache_invalidate(user_id, connector_name)
+
+    return {
+        "connector": connector_name,
+        "disconnected": row is not None,
+        "cache_entries_cleared": cleared,
+    }

@@ -42,6 +42,24 @@ async def check_and_increment(session: AsyncSession, user_id: str) -> tuple[bool
     return True, ""
 
 
+async def refund_query(session: AsyncSession, user_id: str) -> None:
+    """Give back one query after a request the user never got an answer to.
+
+    The counter is charged before the pipeline runs, because it has to be — the
+    check is what decides whether the pipeline runs at all. The consequence is
+    that a connector outage or an LLM error used to burn one of three free
+    queries a day and return nothing, so three failures locked the user out
+    until midnight UTC.
+
+    Floors at zero: a refund arriving after the daily reset must not push the
+    count negative and hand out a free extra query the next day.
+    """
+    row = await get_or_create_plan(session, user_id)
+    if row.queries_today > 0:
+        row.queries_today -= 1
+        await session.commit()
+
+
 async def set_plan(
     session: AsyncSession,
     user_id: str,

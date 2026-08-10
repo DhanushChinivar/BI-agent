@@ -22,7 +22,7 @@ graph TD
         Convos["/v1/conversations\nlist · messages · delete"]
         ConnStatus["/v1/connectors/status\n/v1/oauth/*/start · callback"]
         Webhook["Inbound Webhook\n/v1/webhooks/n8n  (HMAC)"]
-        Workflows["Workflow Trigger\n/v1/workflows/trigger"]
+        Schedules["Scheduled Reports\n/v1/schedules · run-due (HMAC)"]
         StripeHook["/v1/stripe/webhook"]
         Metrics["/metrics (Prometheus)"]
 
@@ -36,7 +36,7 @@ graph TD
             Compute["compute_node\nSQL over full table (DuckDB)"]
             Analyst["analyst_node\nLLM analysis"]
             Summarizer["summarizer_node\nStreams answer"]
-            Action["action_node\nTriggers n8n"]
+            Action["action_node\nPersists schedules"]
         end
     end
 
@@ -52,13 +52,12 @@ graph TD
     end
 
     subgraph Data ["Data Layer"]
-        PG[("PostgreSQL 16\nCredentials · Plans\nConversations · Messages")]
+        PG[("PostgreSQL 16\nCredentials · Plans\nConversations · Messages\nScheduled reports")]
         Redis[("Redis 7\nConnector cache, 5-min TTL")]
     end
 
     subgraph Automation ["n8n"]
-        ScheduledReport["scheduled_report\nCron → query → email"]
-        DataAlert["data_change_alert\nWebhook → query → email"]
+        Ticker["schedule_ticker\n*/5 * * * * → run-due → email\n(the only workflow; Postgres owns the schedules)"]
     end
 
     Claude["☁️ Anthropic Claude API"]
@@ -88,8 +87,7 @@ graph TD
     Summarizer -->|LLM stream| Claude
     Planner --> Retriever --> Compute --> Analyst --> Summarizer
     Summarizer -->|action_required| Action
-    Action --> Workflows
-    Workflows -->|n8n REST API| Automation
+    Action -->|"INSERT scheduled_reports"| PG
 
     Retriever -->|"MCP streamable-http<br/>X-Service-Secret"| MCPServer
     MCPServer --> Connectors
@@ -108,8 +106,9 @@ graph TD
     Stripe -->|Webhook| StripeHook
     StripeHook --> PG
 
-    ScheduledReport -->|POST /v1/query| API
-    DataAlert -->|POST /v1/query| API
+    Ticker -->|"POST /v1/schedules/run-due (HMAC)"| Schedules
+    Schedules -->|"claim due rows FOR UPDATE SKIP LOCKED"| PG
+    Schedules -->|"graph.ainvoke per due row"| Graph
 ```
 
 ## Component Summary
@@ -119,9 +118,9 @@ graph TD
 | **web** | Next.js 16, Clerk, Tailwind | Landing, chat UI + history, connector onboarding, billing settings |
 | **agent** | FastAPI, LangGraph, Anthropic SDK | Multi-agent BI pipeline, REST + SSE API; MCP client |
 | **mcp-server** | FastMCP (MCP Python SDK) | Serves connectors as MCP tools over streamable-http |
-| **postgres** | PostgreSQL 16 | Encrypted connector credentials, user plans, conversation history |
+| **postgres** | PostgreSQL 16 | Encrypted connector credentials, user plans, conversation history, scheduled reports |
 | **redis** | Redis 7 | Connector data cache (5-min TTL) |
-| **n8n** | n8n (Docker) | Scheduled reports and data-change alerts |
+| **n8n** | n8n (Docker) | One ticker workflow that pokes `/v1/schedules/run-due` every 5 minutes and emails the answers. Postgres, not n8n, owns the schedules |
 | **Claude** | Anthropic API | LLM for planning, analysis, summarization |
 | **Clerk** | Clerk SaaS | JWT-based user auth |
 | **Stripe** | Stripe SaaS | Subscription billing, free/pro gating |
@@ -145,13 +144,13 @@ graph TD
 ## Known Architectural Gaps
 
 - **No RAG.** `retriever_node` now queries each provider's own search index and ranks the results by keyword overlap, but there is still no ingest step, no chunking, no embedding, no vector store, and no citations — a semantic match with no shared words is only found if the provider's index finds it. See Phase 10 in [`docs/PLAN.md`](../PLAN.md).
-- **OAuth state is in-process.** `app/api/oauth.py` holds pending flows in a module-level dict, so it does not survive a restart and breaks with more than one worker. Needs Redis before any multi-instance deploy.
 - **No CI and no deployment.** There is no `.github/` directory and no hosting target configured.
-- **`action_node` reports schedules it never created.** It patches the n8n workflow with tags and a caller policy but never writes the cron or the question, then returns `{"status": "scheduled"}`. The UI shows a confirmed schedule that does not exist. See [`docs/DATAFLOW.md`](../DATAFLOW.md#11-known-gaps).
 - **Ranking is still lexical.** `_select_resources` scores resource *titles* by keyword overlap and `_trim` scores rows the same way. Provider search now supplies the candidates, so the old "5 most recent Gmail threads" ceiling is gone, but the ranking on top of it has no notion of meaning.
 - **`compute_node` covers tabular sources only.** An aggregation over Gmail or Notion ("how many invoices did we send?") is still answered by the analyst reading a sample.
 - **Model-written SQL executes in the API process.** DuckDB runs with `enable_external_access=false` and a single-`SELECT` check gates it, both asserted in `tests/unit/test_compute.py` — but it is generated code running in-process, not in a separate sandbox.
 
-> `AuthMiddleware` previously blanket-401'd every self-authenticating route under
-> `APP_ENV=production`. Fixed in `49a5cd9` and pinned by `tests/unit/test_auth.py`; the
-> remaining gaps are tracked in [`docs/DATAFLOW.md`](../DATAFLOW.md#11-known-gaps).
+> Two rounds of fixes are recorded in [`docs/DATAFLOW.md` §11](../DATAFLOW.md#11-known-gaps):
+> the production auth exemptions and conversation scoping (`49a5cd9`), then the scheduling
+> rebuild and hardening pass — schedules moved into Postgres, OAuth state into Redis, JWT
+> `iss`/`aud` verification, async JWKS with rotation, quota refunds, connector-disconnect
+> cache invalidation, and a cap on free-text payloads.

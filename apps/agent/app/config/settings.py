@@ -14,7 +14,9 @@ class Settings(BaseSettings):
 
     # LLM
     anthropic_api_key: str = Field(default="")
-    llm_model: str = Field(default="claude-opus-4-7")
+    # Keep in step with apps/agent/.env.example — when the two disagreed, which
+    # model ran depended on whether a .env file happened to be present.
+    llm_model: str = Field(default="claude-sonnet-5")
 
     # Database
     database_url: str = Field(default="postgresql+asyncpg://localhost/biagent")
@@ -38,6 +40,9 @@ class Settings(BaseSettings):
 
     # Phase 5: auth + billing
     clerk_frontend_api: str = Field(default="")   # e.g. clerk.your-domain.com
+    # Only set this if a Clerk JWT template adds an `aud` claim. Default Clerk
+    # session tokens have none, and demanding one would reject every request.
+    clerk_jwt_audience: str = Field(default="")
     stripe_secret_key: str = Field(default="")
     stripe_webhook_secret: str = Field(default="")
     stripe_pro_price_id: str = Field(default="")
@@ -46,9 +51,11 @@ class Settings(BaseSettings):
     langsmith_api_key: str = Field(default="")
     langsmith_project: str = Field(default="bi-agent-dev")
 
-    # n8n automation
-    n8n_base_url: str = Field(default="http://localhost:5678")
-    n8n_api_key: str = Field(default="")
+    # n8n automation. The agent no longer calls n8n's API — traffic is inbound
+    # only, from the ticker workflow to /v1/schedules/run-due and from the
+    # webhook to /v1/webhooks/n8n, both verified by this HMAC secret. N8N_API_KEY
+    # is still needed by scripts/import_workflows.sh, which reads it from the
+    # shell rather than from here.
     webhook_secret: str = Field(default=_INSECURE_WEBHOOK_SECRET)
 
     # MCP: connectors are exposed as tools by a FastMCP server that the

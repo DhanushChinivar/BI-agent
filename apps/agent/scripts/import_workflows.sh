@@ -70,17 +70,31 @@ for file in "${WORKFLOWS_DIR}"/*.json; do
     continue
   fi
 
+  # n8n rejects read-only fields on create. `active` is one of them — it is set
+  # through /activate below, not in the body.
+  payload=$(jq 'del(.active, .tags, .id)' "$file")
+
   response=$(curl -sf -X POST "${N8N_URL}/api/v1/workflows" \
     -H "${AUTH_HEADER}" \
     -H "Content-Type: application/json" \
-    -d @"${file}")
+    -d "${payload}")
 
   workflow_id=$(echo "${response}" | jq -r '.id // empty')
-  if [[ -n "${workflow_id}" ]]; then
-    green "  import ${name} → id=${workflow_id}"
-    imported=$((imported + 1))
-  else
+  if [[ -z "${workflow_id}" ]]; then
     red "  ERROR importing ${name}: ${response}"
+    continue
+  fi
+
+  green "  import ${name} → id=${workflow_id}"
+  imported=$((imported + 1))
+
+  # An imported-but-inactive schedule trigger never fires, which looks exactly
+  # like a working install until the first report fails to arrive.
+  if curl -sf -X POST "${N8N_URL}/api/v1/workflows/${workflow_id}/activate" \
+      -H "${AUTH_HEADER}" >/dev/null; then
+    green "  active ${name}"
+  else
+    red "  WARN  ${name} imported but could not be activated — enable it in the n8n UI"
   fi
 done
 

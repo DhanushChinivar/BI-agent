@@ -6,8 +6,9 @@ Extracts user_id from the verified claims and writes it to request.state.user_id
 Falls back to "anonymous" in development when no token is present and APP_ENV != production.
 Returns 401 in production if the token is missing or invalid.
 """
+import asyncio
 import logging
-from functools import lru_cache
+import time
 
 import httpx
 from jose import JWTError, jwt
@@ -24,7 +25,10 @@ logger = logging.getLogger(__name__)
 # webhook by its signature header, the n8n webhook by HMAC. Probes are
 # unauthenticated by design. Without this set every one of them returns 401
 # under APP_ENV=production — see docs/DATAFLOW.md §11.
-_EXEMPT_PATHS = frozenset({"/health", "/metrics"})
+# /v1/schedules/run-due is the n8n ticker, verified by the same HMAC as the n8n
+# webhook. Note it is the *only* exempt path under /v1/schedules — the list,
+# create, and delete routes are per-user and stay behind the JWT.
+_EXEMPT_PATHS = frozenset({"/health", "/metrics", "/v1/schedules/run-due"})
 _EXEMPT_PREFIXES = ("/v1/stripe/webhook", "/v1/webhooks/n8n")
 
 
@@ -36,25 +40,104 @@ def _is_exempt(path: str) -> bool:
     )
 
 
-@lru_cache(maxsize=1)
-def _jwks() -> dict:
-    """Fetch Clerk's JWKS once and cache. Restart service to rotate keys."""
-    settings = get_settings()
-    url = f"https://{settings.clerk_frontend_api}/.well-known/jwks.json"
-    resp = httpx.get(url, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
+_JWKS_TTL = 3600  # Clerk rotates signing keys rarely; an hour is well inside that.
+
+# Guarded by `_jwks_lock` so a burst of requests on a cold cache issues one
+# fetch, not one per request.
+_jwks_cache: dict | None = None
+_jwks_fetched_at = 0.0
+_jwks_lock = asyncio.Lock()
 
 
-def _verify_token(token: str) -> str:
+def _issuer() -> str:
+    """Clerk's `iss` claim: the Frontend API origin.
+
+    CLERK_FRONTEND_API is documented as a bare host (`clerk.example.com`), but
+    accepting a full origin costs nothing and a misconfigured `https://` prefix
+    would otherwise produce `https://https://...` and reject every token.
+    """
+    host = get_settings().clerk_frontend_api.rstrip("/")
+    return host if host.startswith("https://") else f"https://{host}"
+
+
+async def _fetch_jwks() -> dict:
+    """Fetch Clerk's JWKS over the running event loop.
+
+    The previous version called `httpx.get` — a blocking socket read — from
+    inside async middleware, stalling every other in-flight request for the
+    duration of the round trip whenever the cache was cold or a key rotated.
+    """
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{_issuer()}/.well-known/jwks.json")
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def _jwks(*, force: bool = False) -> dict:
+    """Cached JWKS, refreshed after `_JWKS_TTL` or on demand.
+
+    `force=True` is the key-rotation path: an unrecognised `kid` means Clerk
+    signed with a key minted after our last fetch, so we refetch once instead of
+    requiring a service restart.
+    """
+    global _jwks_cache, _jwks_fetched_at
+
+    async with _jwks_lock:
+        fresh = _jwks_cache is not None and time.monotonic() - _jwks_fetched_at < _JWKS_TTL
+        if fresh and not force:
+            return _jwks_cache  # type: ignore[return-value]
+        _jwks_cache = await _fetch_jwks()
+        _jwks_fetched_at = time.monotonic()
+        return _jwks_cache
+
+
+def _reset_jwks_cache() -> None:
+    """Test hook — the module-level cache would otherwise leak between cases."""
+    global _jwks_cache, _jwks_fetched_at
+    _jwks_cache, _jwks_fetched_at = None, 0.0
+
+
+def _signing_key(jwks: dict, kid: str) -> dict | None:
+    return next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+
+
+async def _verify_token(token: str) -> str:
     """Return user_id (sub claim) from a valid Clerk JWT. Raises JWTError on failure."""
-    jwks = _jwks()
-    header = jwt.get_unverified_header(token)
-    key = next((k for k in jwks["keys"] if k["kid"] == header["kid"]), None)
+    settings = get_settings()
+    kid = jwt.get_unverified_header(token).get("kid")
+    if not kid:
+        raise JWTError("Token header has no kid")
+
+    key = _signing_key(await _jwks(), kid)
+    if key is None:
+        key = _signing_key(await _jwks(force=True), kid)
     if key is None:
         raise JWTError("No matching key in JWKS")
-    payload = jwt.decode(token, key, algorithms=["RS256"])
-    return payload["sub"]
+
+    # Signature alone only proves *some* Clerk-signed token; without `iss` a
+    # token minted by a different Clerk instance verifies here and its `sub`
+    # becomes a user id in our database. Clerk session tokens carry no `aud`
+    # unless a JWT template adds one, so that check stays opt-in.
+    audience = settings.clerk_jwt_audience or None
+    payload = jwt.decode(
+        token,
+        key,
+        algorithms=["RS256"],
+        issuer=_issuer(),
+        audience=audience,
+        options={"verify_aud": audience is not None},
+    )
+
+    # python-jose rejects a *mismatched* `aud` but accepts a token that has none
+    # at all, so `audience=` alone leaves the check opt-out for any caller who
+    # simply omits the claim. If an audience is configured, require it.
+    if audience is not None and not payload.get("aud"):
+        raise JWTError("Token has no aud claim")
+
+    subject = payload.get("sub")
+    if not subject:
+        raise JWTError("Token has no sub claim")
+    return subject
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -72,10 +155,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         if token:
             try:
-                request.state.user_id = _verify_token(token)
+                request.state.user_id = await _verify_token(token)
             except JWTError as exc:
                 logger.warning("Invalid JWT: %s", exc)
                 return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+            except httpx.HTTPError as exc:
+                # Clerk unreachable is our outage, not the caller's bad token.
+                logger.error("JWKS fetch failed: %s", exc)
+                return JSONResponse({"detail": "Auth backend unavailable"}, status_code=503)
         elif settings.app_env == "production":
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         else:

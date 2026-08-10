@@ -19,8 +19,13 @@ _MAX_ROWS = 60         # tabular rows sent to the LLM
 _MAX_TEXT_CHUNKS = 15  # text chunks (email messages, document sections)
 
 # Connectors return a dict whose list payload lives under one of these keys.
-# Anything else (Notion's `content` string, error dicts) passes through as-is.
 _PAYLOAD_CAPS = {"rows": _MAX_ROWS, "messages": _MAX_TEXT_CHUNKS}
+
+# Free-text payloads, capped by characters rather than item count. ~12k chars is
+# roughly 3k tokens — enough for a substantial Notion page while still leaving
+# room for the other connectors in the same prompt.
+_MAX_TEXT_CHARS = 12_000
+_TEXT_KEYS = ("content",)
 
 # Question types whose answer depends on every row — a sum, average, or trend
 # computed over a keyword-filtered subset is silently wrong. For these we keep
@@ -100,25 +105,88 @@ def _cap_payload(payload: list, cap: int, question: str, exhaustive: bool) -> tu
     return [payload[i] for i in kept_indices], dropped
 
 
+def _cap_text(text: str, question: str, exhaustive: bool) -> tuple[str, int]:
+    """Trim a free-text payload to `_MAX_TEXT_CHARS`. Returns (kept, paragraphs dropped).
+
+    Notion's `content` is a single string built from every block on the page, and
+    nothing capped it: one long runbook or meeting-notes page went into the
+    prompt whole, crowding out the other connectors' data or overflowing the
+    context outright. Paragraphs are the unit because they survive being
+    reordered, which a mid-sentence character cut does not.
+    """
+    if len(text) <= _MAX_TEXT_CHARS:
+        return text, 0
+
+    paragraphs = [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not paragraphs:
+        # Whitespace-only but over budget: nothing meaningful to keep.
+        return text[:_MAX_TEXT_CHARS], 1
+
+    if exhaustive:
+        order = list(range(len(paragraphs)))
+    else:
+        kw = _keywords(question)
+        order = sorted(
+            range(len(paragraphs)),
+            key=lambda i: (-len(kw & _keywords(paragraphs[i])), i),
+        )
+
+    kept_indices: list[int] = []
+    budget = _MAX_TEXT_CHARS
+    for i in order:
+        cost = len(paragraphs[i]) + 2  # the "\n\n" that rejoins it
+        if cost > budget:
+            continue
+        kept_indices.append(i)
+        budget -= cost
+
+    if not kept_indices:
+        # Every paragraph individually exceeds the budget — in practice a page
+        # written as one wall of text. Keep a prefix rather than returning
+        # nothing, and count that paragraph as omitted: it *was* cut, and
+        # reporting 0 here is how a silent truncation gets presented to the
+        # analyst as a complete document.
+        return paragraphs[order[0]][:_MAX_TEXT_CHARS], len(paragraphs)
+
+    # Document order, so the page still reads as a document.
+    kept = "\n\n".join(paragraphs[i] for i in sorted(kept_indices))
+    return kept, len(paragraphs) - len(kept_indices)
+
+
 def _trim(data: Any, question: str, exhaustive: bool) -> tuple[Any, int]:
-    """Cap the list payload inside a connector's read result.
+    """Cap the payloads inside a connector's read result.
 
     Every connector returns a dict (`{"rows": [...]}`, `{"messages": [...]}`,
     `{"content": "..."}`), so this must reach into the payload — an
     `isinstance(data, list)` check on the wrapper never matches.
+
+    Every key is examined, not just the first that matches: returning early
+    meant a result carrying both a list and a text body had only one of them
+    capped, and the uncapped one was the reason the caller called `_trim`.
     """
     if not isinstance(data, dict):
         return data, 0
 
+    trimmed = data
+    total_dropped = 0
+
     for key, cap in _PAYLOAD_CAPS.items():
-        payload = data.get(key)
+        payload = trimmed.get(key)
         if isinstance(payload, list) and payload:
             kept, dropped = _cap_payload(payload, cap, question, exhaustive)
             if dropped:
-                return {**data, key: kept}, dropped
-            return data, 0
+                trimmed = {**trimmed, key: kept}
+                total_dropped += dropped
 
-    return data, 0
+    for key in _TEXT_KEYS:
+        payload = trimmed.get(key)
+        if isinstance(payload, str) and payload:
+            kept_text, dropped = _cap_text(payload, question, exhaustive)
+            if dropped:
+                trimmed = {**trimmed, key: kept_text}
+                total_dropped += dropped
+
+    return trimmed, total_dropped
 
 
 def _search_query(question: str) -> str:

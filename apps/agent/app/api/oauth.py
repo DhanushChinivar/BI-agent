@@ -1,4 +1,5 @@
 """OAuth2 initiation and callback endpoints for Google Sheets, Gmail, and Notion."""
+import asyncio
 import base64
 import logging
 import secrets
@@ -7,7 +8,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from google_auth_oauthlib.flow import Flow
+from redis.exceptions import RedisError
 
+from app.cache import oauth_state_put, oauth_state_take
 from app.config.settings import get_settings
 from app.db.crud import upsert_credentials
 from app.db.engine import get_session_factory
@@ -27,8 +30,25 @@ _GOOGLE_GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/userinfo.email",
 ]
 
-# In-memory state store (dev only — use Redis in production)
-_pending: dict[str, dict] = {}
+async def _take_state(state: str, connector: str) -> dict:
+    """Redeem a pending OAuth state, or 400.
+
+    The connector is re-checked because each callback rebuilds a `Flow` with its
+    own scopes and redirect URI: a state minted by /gmail/start must not be
+    redeemable at /google-sheets/callback, which would store Gmail's tokens
+    under the Sheets connector.
+    """
+    try:
+        meta = await oauth_state_take(state)
+    except RedisError as exc:
+        # Fail closed and say so. Swallowing this would turn a cache outage into
+        # "invalid state", sending the user round the authorise loop forever.
+        logger.error("OAuth state store unavailable: %s", exc)
+        raise HTTPException(status_code=503, detail="Authorization store unavailable")
+
+    if not meta or meta.get("connector") != connector:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    return meta
 
 
 def _google_flow(redirect_uri: str, scopes: list[str]) -> Flow:
@@ -61,19 +81,22 @@ async def google_sheets_start(request: Request):
     auth_url, _ = flow.authorization_url(
         access_type="offline", include_granted_scopes="true", state=state, prompt="consent"
     )
-    _pending[state] = {"user_id": user_id, "connector": "google_sheets", "flow": flow}
+    await oauth_state_put(state, {"user_id": user_id, "connector": "google_sheets"})
     return RedirectResponse(auth_url)
 
 
 @router.get("/google-sheets/callback")
 async def google_sheets_callback(code: str = Query(...), state: str = Query(...)):
-    meta = _pending.pop(state, None)
-    if not meta:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    meta = await _take_state(state, "google_sheets")
 
     settings = get_settings()
-    flow = meta["flow"]
-    flow.fetch_token(code=code)
+    # Rebuilt rather than carried across the redirect: a Flow holds a live
+    # session and is not serialisable, and it is fully determined by the
+    # redirect URI and scopes, which are config.
+    flow = _google_flow(settings.google_sheets_redirect_uri, _GOOGLE_SHEETS_SCOPES)
+    # google-auth-oauthlib exchanges the code over a blocking socket; run it off
+    # the event loop so one slow token endpoint does not stall every other request.
+    await asyncio.to_thread(flow.fetch_token, code=code)
     creds = flow.credentials
 
     factory = get_session_factory()
@@ -99,19 +122,19 @@ async def gmail_start(request: Request):
     auth_url, _ = flow.authorization_url(
         access_type="offline", include_granted_scopes="true", state=state, prompt="consent"
     )
-    _pending[state] = {"user_id": user_id, "connector": "gmail", "flow": flow}
+    await oauth_state_put(state, {"user_id": user_id, "connector": "gmail"})
     return RedirectResponse(auth_url)
 
 
 @router.get("/gmail/callback")
 async def gmail_callback(code: str = Query(...), state: str = Query(...)):
-    meta = _pending.pop(state, None)
-    if not meta:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    meta = await _take_state(state, "gmail")
 
     settings = get_settings()
-    flow = meta["flow"]
-    flow.fetch_token(code=code)
+    flow = _google_flow(settings.google_gmail_redirect_uri, _GOOGLE_GMAIL_SCOPES)
+    # google-auth-oauthlib exchanges the code over a blocking socket; run it off
+    # the event loop so one slow token endpoint does not stall every other request.
+    await asyncio.to_thread(flow.fetch_token, code=code)
     creds = flow.credentials
 
     factory = get_session_factory()
@@ -135,7 +158,7 @@ async def notion_start(request: Request):
     if not settings.notion_client_id:
         raise HTTPException(status_code=501, detail="Notion OAuth not configured")
     state = secrets.token_urlsafe(16)
-    _pending[state] = {"user_id": user_id, "connector": "notion"}
+    await oauth_state_put(state, {"user_id": user_id, "connector": "notion"})
     auth_url = (
         f"https://api.notion.com/v1/oauth/authorize"
         f"?client_id={settings.notion_client_id}"
@@ -149,9 +172,7 @@ async def notion_start(request: Request):
 
 @router.get("/notion/callback")
 async def notion_callback(code: str = Query(...), state: str = Query(...)):
-    meta = _pending.pop(state, None)
-    if not meta:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    meta = await _take_state(state, "notion")
 
     settings = get_settings()
     credentials = base64.b64encode(

@@ -6,7 +6,7 @@ import structlog
 
 from app.graph.message_utils import last_human_message
 from app.graph.state import AgentState
-from app.llm import chat
+from app.llm import EmptyCompletionError, chat
 
 log = structlog.get_logger(__name__)
 
@@ -105,7 +105,7 @@ async def analyst_node(state: AgentState) -> dict:
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
         analysis = json.loads(raw)
-    except (json.JSONDecodeError, KeyError) as exc:
+    except (json.JSONDecodeError, KeyError, EmptyCompletionError) as exc:
         bound.warning("parse_failed", error=str(exc))
         analysis = {"insights": ["Analysis unavailable"], "metrics": {}, "trends": [], "anomalies": []}
 

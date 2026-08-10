@@ -9,14 +9,18 @@ had coverage:
 2. Conversation history is scoped to its owner, so a caller cannot pass another
    user's conversation_id and have their messages loaded as context.
 """
+import base64
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from jose import JWTError, jwt
 
 from app.api.query import _assert_conversation_owned, _load_history
 from app.config.settings import get_settings
+from app.middleware import auth
 from app.middleware.auth import _is_exempt
 
 
@@ -80,10 +84,47 @@ def test_metrics_are_reachable_in_production(prod_client):
 
 
 def test_oauth_callback_reaches_its_own_state_check(prod_client):
-    """A 400 on the OAuth `state` means the request got past AuthMiddleware."""
-    resp = prod_client.get("/v1/oauth/google-sheets/callback?code=x&state=bogus")
+    """A 400 on the OAuth `state` means the request got past AuthMiddleware.
+
+    The state store is patched because it is Redis now, not a module-level
+    dict — without this the test would assert on a connection error instead of
+    on the auth boundary it is about.
+    """
+    with patch(
+        "app.api.oauth.oauth_state_take", new_callable=AsyncMock, return_value=None
+    ):
+        resp = prod_client.get("/v1/oauth/google-sheets/callback?code=x&state=bogus")
+
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid or expired OAuth state"
+
+
+def test_oauth_callback_fails_closed_when_the_state_store_is_down(prod_client):
+    """503, not "invalid state" — otherwise a Redis outage looks to the user
+    like a broken authorisation and sends them round the consent loop forever."""
+    from redis.exceptions import ConnectionError as RedisConnectionError
+
+    with patch(
+        "app.api.oauth.oauth_state_take",
+        new_callable=AsyncMock,
+        side_effect=RedisConnectionError("redis down"),
+    ):
+        resp = prod_client.get("/v1/oauth/gmail/callback?code=x&state=whatever")
+
+    assert resp.status_code == 503
+
+
+def test_a_state_minted_for_one_connector_is_not_redeemable_at_another(prod_client):
+    """Otherwise a Gmail authorisation could be completed at the Sheets
+    callback, storing Gmail's tokens under the Sheets connector."""
+    with patch(
+        "app.api.oauth.oauth_state_take",
+        new_callable=AsyncMock,
+        return_value={"user_id": "u1", "connector": "gmail"},
+    ):
+        resp = prod_client.get("/v1/oauth/google-sheets/callback?code=x&state=s1")
+
+    assert resp.status_code == 400
 
 
 def test_stripe_webhook_reaches_its_own_signature_check(prod_client):
@@ -189,3 +230,167 @@ async def test_load_history_returns_owned_messages():
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
     ]
+
+
+# ── JWT verification ──────────────────────────────────────────────────────────
+
+class _Signer:
+    """An RSA keypair plus the JWKS entry a verifier needs for it.
+
+    Real signatures, not mocks: issuer and audience are checked *by* `jwt.decode`,
+    so faking the decode would test nothing.
+    """
+
+    def __init__(self, kid: str = "kid-1"):
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        self.kid = kid
+        self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+    def sign(self, claims: dict) -> str:
+        from cryptography.hazmat.primitives import serialization
+
+        pem = self._key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode()
+        return jwt.encode(claims, pem, algorithm="RS256", headers={"kid": self.kid})
+
+    def jwks(self) -> dict:
+        numbers = self._key.public_key().public_numbers()
+
+        def b64(value: int) -> str:
+            raw = value.to_bytes((value.bit_length() + 7) // 8, "big")
+            return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+        return {
+            "keys": [
+                {
+                    "kty": "RSA",
+                    "kid": self.kid,
+                    "use": "sig",
+                    "alg": "RS256",
+                    "n": b64(numbers.n),
+                    "e": b64(numbers.e),
+                }
+            ]
+        }
+
+
+ISSUER_HOST = "clerk.example.com"
+
+
+@pytest.fixture
+def signer(monkeypatch):
+    monkeypatch.setenv("CLERK_FRONTEND_API", ISSUER_HOST)
+    monkeypatch.delenv("CLERK_JWT_AUDIENCE", raising=False)
+    get_settings.cache_clear()
+    auth._reset_jwks_cache()
+
+    s = _Signer()
+    monkeypatch.setattr(auth, "_fetch_jwks", AsyncMock(return_value=s.jwks()))
+    yield s
+
+    auth._reset_jwks_cache()
+    get_settings.cache_clear()
+
+
+def _claims(**overrides) -> dict:
+    base = {
+        "sub": "user_abc",
+        "iss": f"https://{ISSUER_HOST}",
+        "exp": int(time.time()) + 300,
+        "iat": int(time.time()),
+    }
+    return {**base, **overrides}
+
+
+@pytest.mark.asyncio
+async def test_valid_token_yields_its_subject(signer):
+    assert await auth._verify_token(signer.sign(_claims())) == "user_abc"
+
+
+@pytest.mark.asyncio
+async def test_token_from_another_clerk_instance_is_rejected(signer):
+    """The bug this pins: a valid signature alone proved nothing about *whose*
+    Clerk instance minted the token, so a `sub` from an attacker-controlled
+    instance became a user id in our database."""
+    token = signer.sign(_claims(iss="https://clerk.attacker.example"))
+
+    with pytest.raises(JWTError):
+        await auth._verify_token(token)
+
+
+@pytest.mark.asyncio
+async def test_audience_is_only_enforced_when_configured(signer, monkeypatch):
+    """Clerk session tokens carry no `aud` unless a JWT template adds one."""
+    assert await auth._verify_token(signer.sign(_claims())) == "user_abc"
+
+    monkeypatch.setenv("CLERK_JWT_AUDIENCE", "bi-agent")
+    get_settings.cache_clear()
+
+    with pytest.raises(JWTError):
+        await auth._verify_token(signer.sign(_claims()))
+    assert await auth._verify_token(signer.sign(_claims(aud="bi-agent"))) == "user_abc"
+
+
+@pytest.mark.asyncio
+async def test_token_without_a_subject_is_rejected(signer):
+    with pytest.raises(JWTError):
+        await auth._verify_token(signer.sign(_claims(sub="")))
+
+
+@pytest.mark.asyncio
+async def test_expired_token_is_rejected(signer):
+    with pytest.raises(JWTError):
+        await auth._verify_token(signer.sign(_claims(exp=int(time.time()) - 10)))
+
+
+@pytest.mark.asyncio
+async def test_jwks_is_fetched_once_and_cached(signer):
+    for _ in range(3):
+        await auth._verify_token(signer.sign(_claims()))
+
+    assert auth._fetch_jwks.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unknown_kid_refetches_the_jwks_once(signer, monkeypatch):
+    """Key rotation used to need a service restart: the JWKS was `lru_cache`d
+    for the process lifetime, so every token signed with a new key 401'd."""
+    await auth._verify_token(signer.sign(_claims()))  # warms the cache
+    rotated = _Signer(kid="kid-2")
+    auth._fetch_jwks.return_value = rotated.jwks()
+
+    assert await auth._verify_token(rotated.sign(_claims())) == "user_abc"
+    assert auth._fetch_jwks.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_still_unknown_kid_does_not_refetch_forever(signer):
+    await auth._verify_token(signer.sign(_claims()))
+    stranger = _Signer(kid="kid-unknown")
+
+    with pytest.raises(JWTError):
+        await auth._verify_token(stranger.sign(_claims()))
+    assert auth._fetch_jwks.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "configured,expected",
+    [
+        ("clerk.example.com", "https://clerk.example.com"),
+        # A full origin in the env var is a plausible misconfiguration, and
+        # naive prefixing would build "https://https://..." and reject everything.
+        ("https://clerk.example.com", "https://clerk.example.com"),
+        ("clerk.example.com/", "https://clerk.example.com"),
+    ],
+)
+def test_issuer_normalises_the_configured_host(monkeypatch, configured, expected):
+    monkeypatch.setenv("CLERK_FRONTEND_API", configured)
+    get_settings.cache_clear()
+    try:
+        assert auth._issuer() == expected
+    finally:
+        get_settings.cache_clear()

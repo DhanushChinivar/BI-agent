@@ -1,117 +1,89 @@
-"""Action node: triggers n8n workflows for scheduling and alerting."""
-import logging
+"""Action node: persists the recurring reports and alerts the planner detected.
 
-import httpx
+This used to talk to n8n's API directly, and it did not work. It PATCHed the
+workflow with `{"active": True}` plus a copy of its own tags — the cron and the
+question were never written anywhere — then POSTed to
+`/api/v1/workflows/{id}/run`, an endpoint that does not exist in n8n's public
+API. It returned `{"status": "scheduled"}` regardless, so the UI showed a
+confirmation for a schedule that was never created.
 
-from app.config.settings import get_settings
+The schedule now lives in Postgres. n8n keeps one ticker workflow that calls
+`POST /v1/schedules/run-due`; see `app/api/schedules.py`.
+"""
+import structlog
+
+from app.db.engine import get_session_factory
+from app.db.schedule_crud import InvalidCronError, upsert_schedule
 from app.graph.state import AgentState
 
-logger = logging.getLogger(__name__)
+log = structlog.get_logger()
 
-# Maps action_type → n8n workflow name used to look up the workflow ID via API
-_WORKFLOW_NAMES = {
-    "schedule_report": "scheduled_report",
-    "data_alert": "data_change_alert",
-}
+_SUPPORTED = {"schedule_report", "data_alert"}
+
+# What the planner emits when the user says "every week" without saying when.
+_DEFAULT_CRON = "0 8 * * 1"  # Mondays, 08:00 UTC
 
 
 async def action_node(state: AgentState) -> dict:
-    settings = get_settings()
     action_type = state.get("action_type")
-    action_cron = state.get("action_cron")
-    action_question = state.get("action_question") or state.get("final_answer", "")
+    bound = log.bind(
+        node="action",
+        conversation_id=state.get("conversation_id"),
+        user_id=state.get("user_id"),
+    )
 
     if not action_type:
         return {"schedule_result": None}
 
-    if not settings.n8n_api_key:
-        logger.warning("n8n integration not configured — skipping action node")
-        return {"schedule_result": {"status": "skipped", "reason": "n8n not configured"}}
+    if action_type not in _SUPPORTED:
+        bound.warning("unknown_action", action_type=action_type)
+        return {
+            "schedule_result": {"status": "error", "reason": f"unknown action: {action_type}"}
+        }
 
-    workflow_name = _WORKFLOW_NAMES.get(action_type)
-    if not workflow_name:
-        logger.warning("Unknown action_type=%s", action_type)
-        return {"schedule_result": {"status": "error", "reason": f"unknown action: {action_type}"}}
+    user_id = state.get("user_id")
+    if not user_id or user_id == "anonymous":
+        # A schedule with no owner has nobody to deliver to and nobody to bill.
+        return {
+            "schedule_result": {"status": "error", "reason": "sign in to schedule a report"}
+        }
 
-    headers = {"X-N8N-API-KEY": settings.n8n_api_key, "Content-Type": "application/json"}
+    # Fall back to the question that produced this turn: "run this every Monday"
+    # carries no question of its own.
+    question = (state.get("action_question") or "").strip()
+    if not question:
+        from app.graph.message_utils import last_human_message
+
+        question = (last_human_message(state.get("messages", [])) or "").strip()
+    if not question:
+        return {"schedule_result": {"status": "error", "reason": "no question to schedule"}}
+
+    cron = (state.get("action_cron") or _DEFAULT_CRON).strip()
 
     try:
-        async with httpx.AsyncClient(base_url=settings.n8n_base_url, timeout=10) as client:
-            # Find the workflow by name
-            resp = await client.get("/api/v1/workflows", headers=headers)
-            resp.raise_for_status()
-            workflows = resp.json().get("data", [])
-            workflow = next((w for w in workflows if w.get("name") == workflow_name), None)
-
-            if not workflow:
-                return {
-                    "schedule_result": {
-                        "status": "error",
-                        "reason": f"workflow '{workflow_name}' not found in n8n — run import.sh first",
-                    }
-                }
-
-            workflow_id = workflow["id"]
-
-            # Update the workflow's sticky data with the user's cron + question, then activate it
-            patch_body: dict = {"active": True}
-            if action_cron or action_question:
-                patch_body["settings"] = {
-                    "callerPolicy": "workflowsFromSameOwner",
-                }
-                # Pass schedule/question via tags so workflows can read them
-                existing_tags = [t["id"] for t in workflow.get("tags", [])]
-                patch_body["tags"] = existing_tags
-
-            patch_resp = await client.patch(
-                f"/api/v1/workflows/{workflow_id}",
-                headers=headers,
-                json=patch_body,
-            )
-            patch_resp.raise_for_status()
-
-            # Trigger an immediate execution with the payload
-            run_resp = await client.post(
-                f"/api/v1/workflows/{workflow_id}/run",
-                headers=headers,
-                json={
-                    "startNodes": [],
-                    "destinationNode": "",
-                    "runData": {},
-                    "pinData": {},
-                    "workflowData": {
-                        "id": workflow_id,
-                        "name": workflow_name,
-                    },
-                    "data": {
-                        "question": action_question,
-                        "cron": action_cron,
-                        "user_id": state.get("user_id", "anonymous"),
-                    },
-                },
-            )
-            run_resp.raise_for_status()
-            execution = run_resp.json()
-
-            logger.info(
-                "Triggered n8n workflow=%s execution=%s for user=%s",
-                workflow_name,
-                execution.get("executionId"),
-                state.get("user_id"),
-            )
-            return {
-                "schedule_result": {
-                    "status": "scheduled",
-                    "workflow": workflow_name,
-                    "workflow_id": workflow_id,
-                    "execution_id": execution.get("executionId"),
-                    "cron": action_cron,
-                }
-            }
-
-    except httpx.HTTPStatusError as exc:
-        logger.error("n8n API error %s: %s", exc.response.status_code, exc.response.text)
+        factory = get_session_factory()
+        async with factory() as session:
+            row = await upsert_schedule(session, user_id, question, cron, action_type)
+    except InvalidCronError as exc:
+        # Surfaced rather than defaulted: silently rewriting a schedule the user
+        # asked for is how you end up emailing someone at the wrong time
+        # forever.
+        bound.warning("bad_cron", cron=cron, error=str(exc))
         return {"schedule_result": {"status": "error", "reason": str(exc)}}
-    except httpx.RequestError as exc:
-        logger.error("n8n unreachable: %s", exc)
-        return {"schedule_result": {"status": "error", "reason": "n8n unreachable"}}
+    except ValueError as exc:  # schedule limit
+        bound.warning("schedule_rejected", error=str(exc))
+        return {"schedule_result": {"status": "error", "reason": str(exc)}}
+    except Exception as exc:
+        bound.error("schedule_failed", error=str(exc))
+        return {"schedule_result": {"status": "error", "reason": "could not save schedule"}}
+
+    bound.info("scheduled", schedule_id=row.id, cron=row.cron, next_run=row.next_run_at)
+    return {
+        "schedule_result": {
+            "status": "scheduled",
+            "schedule_id": row.id,
+            "workflow": action_type,
+            "cron": row.cron,
+            "next_run_at": row.next_run_at.isoformat(),
+        }
+    }

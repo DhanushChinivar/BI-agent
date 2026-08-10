@@ -10,6 +10,13 @@ from app.db.crud import get_credentials
 from app.db.engine import get_session_factory
 
 
+# The docstring used to claim 20 while the call asked for 5. 8 is the number the
+# retriever can actually use: it ranks the candidates and reads `_MAX_RESOURCES`
+# (3) of them, so a handful of extras improves the ranking, while every
+# additional thread costs a separate metadata round trip.
+_LIST_THREADS = 8
+
+
 def _decode_body(payload: dict) -> str:
     body = payload.get("body", {}).get("data", "")
     if body:
@@ -38,12 +45,24 @@ class GmailConnector:
         return data
 
     async def list_resources(self, user_id: str) -> list[dict[str, Any]]:
-        """Return the 20 most recent message thread summaries."""
+        """Return the most recent thread summaries, newest first.
+
+        This is the fallback path — the retriever calls `search` first and only
+        falls back to listing when the query matches nothing. The count is
+        deliberately small because building each summary costs its own
+        `threads().get()` round trip: the list response carries no subject or
+        sender, so N threads means N+1 sequential API calls.
+        """
         creds_data = await self._creds(user_id)
         creds = await get_google_credentials(user_id, self.name, creds_data)
         service = build("gmail", "v1", credentials=creds, cache_discovery=False)
         try:
-            threads = service.users().threads().list(userId="me", maxResults=5).execute()
+            threads = (
+                service.users()
+                .threads()
+                .list(userId="me", maxResults=_LIST_THREADS)
+                .execute()
+            )
         except HttpError as exc:
             return [{"error": str(exc)}]
 

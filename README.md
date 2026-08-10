@@ -97,12 +97,25 @@ make ps         # show running containers
 3. Set `NOTION_CLIENT_ID`, `NOTION_CLIENT_SECRET` in `apps/agent/.env`
 4. Visit `http://localhost:8000/v1/oauth/notion/start?user_id=<your-id>` to connect
 
-### n8n workflows
-After `make dev`, import the bundled workflows:
+### Scheduled reports
+Schedules live in Postgres (`scheduled_reports`), not in n8n. n8n runs exactly one
+workflow — `schedule_ticker` — which every 5 minutes calls `POST /v1/schedules/run-due`,
+signed with `WEBHOOK_SECRET`; the agent claims whatever is due, runs it, and returns the
+answers for n8n to email.
+
+After `make dev`, import and activate it:
 ```bash
-N8N_BASE_URL=http://localhost:5678 N8N_API_KEY=<your-key> ./apps/n8n/import.sh
+N8N_API_KEY=<your-key> make import-workflows
 ```
-This imports `scheduled_report` (cron → query → email) and `data_change_alert` (webhook → query → email).
+
+`WEBHOOK_SECRET` must be exported in the shell you run `make dev` from — the n8n container
+reads it to sign its calls, and the agent 401s if the two disagree:
+```bash
+export WEBHOOK_SECRET=$(grep '^WEBHOOK_SECRET=' apps/agent/.env | cut -d= -f2)
+```
+
+Ask the agent *"email me this every Monday"* and it writes a schedule, or manage them
+directly via `GET/POST /v1/schedules` and `DELETE /v1/schedules/{id}`.
 
 ## Production configuration
 

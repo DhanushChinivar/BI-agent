@@ -6,7 +6,7 @@ import structlog
 
 from app.graph.message_utils import get_content, get_role, last_human_message
 from app.graph.state import AgentState
-from app.llm import chat
+from app.llm import EmptyCompletionError, chat
 
 log = structlog.get_logger(__name__)
 
@@ -90,7 +90,11 @@ async def planner_node(state: AgentState) -> dict:
         plan = [f"question_type:{question_type}", f"connectors:{','.join(connectors)}"] + steps
         if action_type:
             plan.append(f"action:{action_type}")
-    except (json.JSONDecodeError, KeyError) as exc:
+    except (json.JSONDecodeError, KeyError, EmptyCompletionError) as exc:
+        # EmptyCompletionError belongs here for the same reason a bad JSON body does:
+        # planning is an optimisation, and the default plan answers the question
+        # anyway. Losing the whole request because the planner came back empty
+        # would be a strictly worse outcome than retrieving with defaults.
         bound.warning("parse_failed", error=str(exc))
         plan = ["retrieve", "analyze", "summarize"]
         action_type = None

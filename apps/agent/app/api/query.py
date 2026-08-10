@@ -1,5 +1,7 @@
 """POST /v1/query and POST /v1/query/stream — main entry points."""
+import asyncio
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator
 
@@ -27,9 +29,11 @@ from app.graph.nodes.summarizer import build_prompt as build_summarizer_prompt
 from app.graph.state import AgentState
 from app.llm import chat as llm_chat
 from app.llm import stream as llm_stream
+from app.middleware.gating import refund
 from app.middleware.rate_limit import get_user_id_for_limit, limiter
 from app.schemas.query import QueryRequest, QueryResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["query"])
 
 _TITLE_SYSTEM = (
@@ -141,6 +145,12 @@ def _sse(event: str, data: dict) -> dict:
 
 
 async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dict]:
+    """Run the pipeline, emitting SSE events as it goes.
+
+    Wrapped by `_guarded_stream`, which owns the failure path: an exception here
+    must reach the client as an `error` event and refund the quota that
+    GatingMiddleware already charged.
+    """
     conversation_id = req.conversation_id or str(uuid.uuid4())
 
     history = await _load_history(user_id, conversation_id) if req.conversation_id else []
@@ -201,6 +211,10 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
                 "status": "scheduled",
                 "workflow": result.get("workflow"),
                 "cron": result.get("cron"),
+                # The confirmation used to state a cron the backend had not
+                # actually stored. Echoing the persisted next run makes the
+                # claim checkable.
+                "next_run_at": result.get("next_run_at"),
             })
         elif result.get("status") == "error":
             yield _sse("warning", {
@@ -209,6 +223,36 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
             })
 
     yield _sse("done", {"conversation_id": conversation_id})
+
+
+async def _guarded_stream(user_id: str, req: QueryRequest) -> AsyncIterator[dict]:
+    """Own the failure path of a streaming request.
+
+    Two things went wrong without this. The client saw a socket close with no
+    explanation — the last event it received was a `stage`, so the UI sat on
+    "Analyzing results…" forever. And the quota stayed spent: GatingMiddleware
+    charges before the pipeline runs and judges the outcome by status code, but
+    an SSE response is already 200 by the time the generator starts, so a
+    mid-stream failure looked like a success from there.
+    """
+    try:
+        async for event in _stream_pipeline(user_id, req):
+            yield event
+    except asyncio.CancelledError:
+        # The client hung up. Not a failure, and not ours to refund — the work
+        # was done and partially delivered.
+        raise
+    except Exception as exc:
+        logger.exception("Streaming pipeline failed for user=%s", user_id)
+        await refund(user_id, "streaming pipeline failed")
+        # Keyed on `error`, not `message`: useAgentStream dispatches on payload
+        # *shape* and ignores the SSE event name, and a bare `message` key is
+        # already how connector warnings are recognised.
+        yield _sse("error", {"error": "Something went wrong answering that question."})
+        # Still emit `done` so the frontend's stream handler runs its cleanup
+        # rather than waiting on an event that never arrives.
+        yield _sse("done", {"conversation_id": req.conversation_id or "", "failed": True})
+        del exc
 
 
 @router.post("/query/stream")
@@ -220,4 +264,4 @@ async def query_stream(req: QueryRequest, request: Request) -> EventSourceRespon
     # EventSourceResponse breaks the stream instead of returning a clean 404.
     if req.conversation_id:
         await _assert_conversation_owned(user_id, req.conversation_id)
-    return EventSourceResponse(_stream_pipeline(user_id, req))
+    return EventSourceResponse(_guarded_stream(user_id, req))

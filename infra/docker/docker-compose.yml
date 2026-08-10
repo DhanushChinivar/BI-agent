@@ -37,10 +37,10 @@ services:
     env_file:
       - ../../apps/agent/.env
     environment:
-      # Override DB/Redis/n8n to use container hostnames, not localhost
+      # Override DB/Redis to use container hostnames, not localhost. No n8n URL:
+      # the agent does not call n8n — n8n calls the agent.
       DATABASE_URL: postgresql+asyncpg://biagent:biagent@postgres/biagent
       REDIS_URL: redis://redis:6379
-      N8N_BASE_URL: http://n8n:5678
       MCP_SERVER_URL: http://mcp-server:8001/mcp
     depends_on:
       postgres:
@@ -98,6 +98,14 @@ services:
       N8N_PORT: 5678
       WEBHOOK_URL: http://localhost:5678
       AGENT_URL: http://agent:8000
+      # The ticker signs its request body with this; the agent rejects the call
+      # with 401 unless the two match. Interpolated from the shell rather than
+      # loaded via env_file: N8N_BLOCK_ENV_ACCESS_IN_NODE is false, so anything
+      # in this container's environment is readable from any workflow's code
+      # node — the agent's .env has no business in here.
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-change-me-webhook-secret}
+      REPORT_FROM_EMAIL: ${REPORT_FROM_EMAIL:-bi-agent@localhost}
+      REPORT_TO_EMAIL: ${REPORT_TO_EMAIL:-}
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
     volumes:
       - n8n_data:/home/node/.n8n

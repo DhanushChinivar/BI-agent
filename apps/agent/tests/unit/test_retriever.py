@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.graph.nodes import retriever
 from app.graph.nodes.retriever import (
     _MAX_RESOURCES,
     _MAX_ROWS,
@@ -353,3 +354,83 @@ async def test_retriever_handles_connector_error():
         result = await retriever_node(state)
 
     assert "error" in result["retrieved_data"][0]
+
+
+# ── free-text payload cap ─────────────────────────────────────────────────────
+
+def _page(paragraphs: list[str]) -> str:
+    return "\n\n".join(paragraphs)
+
+
+def test_short_content_is_left_alone():
+    text = _page(["Revenue grew.", "Costs fell."])
+
+    assert _trim({"content": text}, "revenue", False) == ({"content": text}, 0)
+
+
+def test_long_notion_content_is_capped():
+    """Nothing bounded this string before: one long page went into the prompt
+    whole, crowding out every other connector's data."""
+    text = _page([f"Paragraph {i} " + "x" * 500 for i in range(100)])
+
+    trimmed, dropped = _trim({"content": text}, "revenue", False)
+
+    assert len(trimmed["content"]) <= retriever._MAX_TEXT_CHARS
+    assert dropped > 0
+
+
+def test_capped_content_keeps_the_paragraphs_that_match_the_question():
+    filler = [f"Unrelated note {i} " + "y" * 800 for i in range(40)]
+    target = "Quarterly revenue for the Chatswood store was 91000 dollars."
+    text = _page([*filler, target])
+
+    trimmed, _ = _trim({"content": text}, "chatswood revenue", False)
+
+    assert target in trimmed["content"]
+
+
+def test_capped_content_stays_in_document_order():
+    """Relevance decides what survives; the page must still read as a page."""
+    first = "Revenue summary for the year. " + "a" * 100
+    last = "Revenue outlook for next year. " + "b" * 100
+    text = _page([first, *[f"Filler {i} " + "z" * 900 for i in range(30)], last])
+
+    trimmed, _ = _trim({"content": text}, "revenue", False)
+    content = trimmed["content"]
+
+    assert content.index(first) < content.index(last)
+
+
+def test_exhaustive_questions_keep_content_from_the_top():
+    """A total or a trend depends on order, so relevance reordering is wrong."""
+    text = _page([f"Line {i} " + "q" * 900 for i in range(40)])
+
+    trimmed, dropped = _trim({"content": text}, "total", True)
+
+    assert trimmed["content"].startswith("Line 0 ")
+    assert dropped > 0
+
+
+def test_one_giant_paragraph_is_truncated_rather_than_dropped():
+    text = "w" * (retriever._MAX_TEXT_CHARS * 3)
+
+    trimmed, _ = _trim({"content": text}, "revenue", False)
+
+    assert 0 < len(trimmed["content"]) <= retriever._MAX_TEXT_CHARS
+
+
+def test_trim_caps_every_payload_not_just_the_first():
+    """The early return meant a result carrying both a list and a text body had
+    only one of them capped — and the uncapped one was why `_trim` was called."""
+    result = {
+        "rows": [{"i": i} for i in range(retriever._MAX_ROWS + 10)],
+        "content": _page([f"Note {i} " + "n" * 900 for i in range(40)]),
+    }
+
+    trimmed, dropped = _trim(result, "revenue", False)
+
+    kept_paragraphs = len(trimmed["content"].split("\n\n"))
+    assert len(trimmed["rows"]) == retriever._MAX_ROWS
+    assert len(trimmed["content"]) <= retriever._MAX_TEXT_CHARS
+    # 10 rows plus every paragraph that did not fit — both halves counted.
+    assert dropped == 10 + (40 - kept_paragraphs)

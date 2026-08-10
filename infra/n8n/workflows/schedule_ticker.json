@@ -1,0 +1,135 @@
+{
+  "name": "schedule_ticker",
+  "active": false,
+  "nodes": [
+    {
+      "id": "tick",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/5 * * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "build-body",
+      "name": "Build Signed Body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "parameters": {
+        "jsCode": "// The agent verifies an HMAC over the exact request body, so the body has\n// to be built once here and reused verbatim by the HTTP node. Building it\n// twice — once to sign, once to send — is how the signature silently stops\n// matching the moment either side reformats the JSON.\nconst body = JSON.stringify({ source: 'n8n-ticker', at: new Date().toISOString() });\nreturn [{ json: { body } }];"
+      }
+    },
+    {
+      "id": "run-due",
+      "name": "Run Due Schedules",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [720, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_URL }}/v1/schedules/run-due",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "x-hub-signature-256",
+              "value": "={{ 'sha256=' + $crypto.hmac($json.body, $env.WEBHOOK_SECRET, 'sha256', 'hex') }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    },
+    {
+      "id": "split-results",
+      "name": "Split Results",
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [960, 300],
+      "parameters": {
+        "fieldToSplitOut": "results",
+        "options": {}
+      }
+    },
+    {
+      "id": "only-successful",
+      "name": "Only Successful",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2,
+      "position": [1180, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "ok",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "send-report",
+      "name": "Send Report Email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1400, 300],
+      "parameters": {
+        "fromEmail": "={{ $env.REPORT_FROM_EMAIL }}",
+        "toEmail": "={{ $env.REPORT_TO_EMAIL }}",
+        "subject": "=BI Agent report — {{ $json.question }}",
+        "text": "={{ $json.answer }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [[{ "node": "Build Signed Body", "type": "main", "index": 0 }]]
+    },
+    "Build Signed Body": {
+      "main": [[{ "node": "Run Due Schedules", "type": "main", "index": 0 }]]
+    },
+    "Run Due Schedules": {
+      "main": [[{ "node": "Split Results", "type": "main", "index": 0 }]]
+    },
+    "Split Results": {
+      "main": [[{ "node": "Only Successful", "type": "main", "index": 0 }]]
+    },
+    "Only Successful": {
+      "main": [[{ "node": "Send Report Email", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": []
+}

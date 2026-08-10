@@ -3,7 +3,7 @@ import base64
 from datetime import datetime, timezone
 
 from cryptography.fernet import Fernet
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.config.settings import get_settings
@@ -63,6 +63,40 @@ class UserPlan(Base):
         server_default=func.now(),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class ScheduledReport(Base):
+    """A recurring question a user asked the agent to answer on a cron.
+
+    Postgres is the source of truth for schedules, not n8n. n8n owns one ticker
+    workflow that pokes `/v1/schedules/run-due` every few minutes; everything
+    about *what* runs and *when* lives here. The alternative — a workflow per
+    schedule, created through n8n's API — makes the schedule list unreadable
+    without calling n8n, loses every schedule if the n8n volume is recreated,
+    and gives no place to record whether the last run succeeded.
+    """
+
+    __tablename__ = "scheduled_reports"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    cron: Mapped[str] = mapped_column(String(64), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(32), nullable=False, default="schedule_report")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Indexed together with `active`: the due query is the only hot read, and it
+    # is exactly "active rows whose next_run_at has passed".
+    next_run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(String(16), nullable=True)  # "ok" | "error"
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_scheduled_reports_due", "active", "next_run_at"),)
 
 
 class Conversation(Base):
