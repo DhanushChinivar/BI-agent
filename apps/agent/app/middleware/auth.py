@@ -19,6 +19,22 @@ from app.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+# Callers that never carry a Clerk JWT because they authenticate by their own
+# mechanism: OAuth callbacks are bound by the `state` parameter, the Stripe
+# webhook by its signature header, the n8n webhook by HMAC. Probes are
+# unauthenticated by design. Without this set every one of them returns 401
+# under APP_ENV=production — see docs/DATAFLOW.md §11.
+_EXEMPT_PATHS = frozenset({"/health", "/metrics"})
+_EXEMPT_PREFIXES = ("/v1/stripe/webhook", "/v1/webhooks/n8n")
+
+
+def _is_exempt(path: str) -> bool:
+    return (
+        path in _EXEMPT_PATHS
+        or path.startswith(_EXEMPT_PREFIXES)
+        or (path.startswith("/v1/oauth/") and path.endswith("/callback"))
+    )
+
 
 @lru_cache(maxsize=1)
 def _jwks() -> dict:
@@ -44,6 +60,14 @@ def _verify_token(token: str) -> str:
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
         settings = get_settings()
+
+        # These routes verify their own caller; they must not be gated on a JWT
+        # they will never have. `user_id` is still set so downstream code can
+        # read request.state.user_id unconditionally.
+        if _is_exempt(request.url.path):
+            request.state.user_id = "system"
+            return await call_next(request)
+
         token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
 
         if token:

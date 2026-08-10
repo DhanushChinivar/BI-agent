@@ -30,7 +30,6 @@ const CONNECTOR_META: Record<string, { label: string; description: string; color
 
 function ConnectPageInner() {
   const { user, isLoaded } = useUser();
-  const userId = user?.id ?? "dev-user";
   const [statuses, setStatuses] = useState<ConnectorStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const searchParams = useSearchParams();
@@ -38,14 +37,17 @@ function ConnectPageInner() {
 
   useEffect(() => {
     if (!isLoaded) return;
-    fetch(`/api/agent/v1/connectors/status?user_id=${userId}`)
+    // No user_id param: the agent reads the identity from the verified Clerk
+    // JWT the BFF injects. Passing one is ignored, and inviting it back would
+    // reintroduce the Phase 9 identity-spoofing hole.
+    fetch(`/api/agent/v1/connectors/status`)
       .then((r) => r.json())
       .then((data) => setStatuses(data.connectors ?? []))
       .finally(() => setLoading(false));
-  }, [justConnected, isLoaded, userId]);
+  }, [justConnected, isLoaded, user?.id]);
 
   const disconnect = async (name: string) => {
-    await fetch(`/api/agent/v1/connectors/${name}?user_id=${userId}`, { method: "DELETE" });
+    await fetch(`/api/agent/v1/connectors/${name}`, { method: "DELETE" });
     setStatuses((prev) =>
       prev.map((s) => (s.connector === name ? { ...s, connected: false, last_updated: null } : s))
     );
@@ -99,7 +101,7 @@ function ConnectPageInner() {
                       </button>
                     ) : (
                       <a
-                        href={`/api/agent/v1/oauth/${s.connector.replace("_", "-")}/start?user_id=${userId}`}
+                        href={`/api/agent/v1/oauth/${s.connector.replace("_", "-")}/start`}
                         className="text-xs bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors"
                       >
                         Connect

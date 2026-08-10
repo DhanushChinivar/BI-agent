@@ -3,7 +3,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from sse_starlette.sse import EventSourceResponse
 
 from app.db.engine import get_session_factory
@@ -38,10 +38,29 @@ _TITLE_SYSTEM = (
 )
 
 
-async def _load_history(conversation_id: str) -> list[dict]:
-    """Return prior messages as LLM-compatible dicts (last 10 = 5 turns)."""
+async def _assert_conversation_owned(user_id: str, conversation_id: str) -> None:
+    """404 unless `conversation_id` belongs to `user_id`.
+
+    Checked before the pipeline starts. Without it a caller could pass another
+    user's conversation_id and have their messages loaded as history — the only
+    thing that previously stopped it was an incidental primary-key collision in
+    `_ensure_conversation`, which surfaced as a 500 rather than a refusal.
+    """
     factory = get_session_factory()
     async with factory() as session:
+        if await get_conversation(session, user_id, conversation_id) is None:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+
+async def _load_history(user_id: str, conversation_id: str) -> list[dict]:
+    """Return prior messages as LLM-compatible dicts (last 10 = 5 turns).
+
+    Scoped by `user_id` as defence in depth behind `_assert_conversation_owned`.
+    """
+    factory = get_session_factory()
+    async with factory() as session:
+        if await get_conversation(session, user_id, conversation_id) is None:
+            return []
         rows = await get_messages(session, conversation_id)
     msgs = []
     for r in rows[-10:]:
@@ -93,7 +112,10 @@ async def query(req: QueryRequest, request: Request) -> QueryResponse:
     user_id = request.state.user_id
     conversation_id = req.conversation_id or str(uuid.uuid4())
 
-    history = await _load_history(conversation_id) if req.conversation_id else []
+    if req.conversation_id:
+        await _assert_conversation_owned(user_id, req.conversation_id)
+
+    history = await _load_history(user_id, conversation_id) if req.conversation_id else []
     messages = history + [{"role": "human", "content": req.message}]
 
     title = req.message[:60]
@@ -120,7 +142,7 @@ def _sse(event: str, data: dict) -> dict:
 async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dict]:
     conversation_id = req.conversation_id or str(uuid.uuid4())
 
-    history = await _load_history(conversation_id) if req.conversation_id else []
+    history = await _load_history(user_id, conversation_id) if req.conversation_id else []
     messages = history + [{"role": "human", "content": req.message}]
 
     title = req.message[:60]
@@ -189,4 +211,8 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
 async def query_stream(req: QueryRequest, request: Request) -> EventSourceResponse:
     """Streaming endpoint — pushes SSE events as the pipeline progresses."""
     user_id = request.state.user_id
+    # Validated here rather than inside the generator: raising from inside an
+    # EventSourceResponse breaks the stream instead of returning a clean 404.
+    if req.conversation_id:
+        await _assert_conversation_owned(user_id, req.conversation_id)
     return EventSourceResponse(_stream_pipeline(user_id, req))
