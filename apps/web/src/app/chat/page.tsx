@@ -93,7 +93,14 @@ export default function Home() {
       {/* Sidebar */}
       <aside className="w-60 shrink-0 border-r border-zinc-800 flex flex-col">
         <div className="px-4 py-5 border-b border-zinc-800">
-          <span className="font-semibold text-sm tracking-wide text-indigo-400">BI Agent</span>
+          {/* Plain <a>, matching the other sidebar links: this leaves the chat
+              app for the marketing page, so a full navigation is honest. */}
+          <a
+            href="/"
+            className="font-semibold text-sm tracking-wide text-indigo-400 hover:text-indigo-300 transition-colors"
+          >
+            BI Agent
+          </a>
         </div>
 
         <div className="px-3 pt-3">
