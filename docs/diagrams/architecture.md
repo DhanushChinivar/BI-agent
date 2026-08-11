@@ -62,7 +62,7 @@ graph TD
     end
 
     Claude["☁️ Anthropic Claude API"]
-    Voyage["☁️ Voyage AI (embeddings)"]
+    Voyage["☁️ Voyage AI\nembeddings + reranking"]
     Stripe["☁️ Stripe"]
     ClerkSvc["☁️ Clerk (JWKS)"]
     Google["☁️ Google APIs"]
@@ -95,7 +95,7 @@ graph TD
     MCPServer --> Connectors
     Retriever <--> Redis
     Retriever -->|"vector search (gmail, notion)\ncosine, top-k, user-scoped"| PG
-    Retriever -->|"embed question"| Voyage
+    Retriever -->|"embed question, then rerank the shortlist"| Voyage
     Connectors -->|"decrypt OAuth tokens"| PG
     Sheets --> Google
     Gmail --> Google
@@ -150,14 +150,16 @@ graph TD
 
 ## Known Architectural Gaps
 
-- **Retrieval is real for text, deliberately not for tables.** Gmail and Notion are chunked, embedded (`voyage-3-lite`), and searched in pgvector with citations. Spreadsheets are never embedded — an exact sum needs `compute_node`, not nearest-neighbour lookup. What is missing is reranking, retrieval evals, and rendering the citations in the UI.
+- **Retrieval is real for text, deliberately not for tables.** Gmail and Notion are chunked, embedded (`voyage-3-lite`), searched in pgvector, then reranked by a cross-encoder (`rerank-2-lite`) — measurement showed cosine distance alone cannot separate a genuine match from a topically adjacent miss. Spreadsheets are never embedded: an exact sum needs `compute_node`, not nearest-neighbour lookup. Still missing: retrieval evals (recall@k over a labelled set) and rendering the citations in the UI.
 - **No CI and no deployment.** There is no `.github/` directory and no hosting target configured.
 - **Ranking on the live path is still lexical.** `_select_resources` scores resource *titles* by keyword overlap and `_trim` scores rows the same way. That path now runs only for spreadsheets and for text connectors whose index is still cold.
 - **`compute_node` covers tabular sources only.** An aggregation over Gmail or Notion ("how many invoices did we send?") is still answered by the analyst reading a sample.
 - **Model-written SQL executes in the API process.** DuckDB runs with `enable_external_access=false` and a single-`SELECT` check gates it, both asserted in `tests/unit/test_compute.py` — but it is generated code running in-process, not in a separate sandbox.
 
-> Two rounds of fixes are recorded in [`docs/DATAFLOW.md` §11](../DATAFLOW.md#11-known-gaps):
-> the production auth exemptions and conversation scoping (`49a5cd9`), then the scheduling
-> rebuild and hardening pass — schedules moved into Postgres, OAuth state into Redis, JWT
-> `iss`/`aud` verification, async JWKS with rotation, quota refunds, connector-disconnect
-> cache invalidation, and a cap on free-text payloads.
+> Three rounds of fixes are recorded in [`docs/DATAFLOW.md` §11](../DATAFLOW.md#11-known-gaps):
+> production auth exemptions and conversation scoping (`49a5cd9`); the scheduling rebuild
+> and hardening pass — schedules into Postgres, OAuth state into Redis, JWT `iss`/`aud`
+> verification, async JWKS with rotation, quota refunds, connector-disconnect cache
+> invalidation, a cap on free-text payloads; and the RAG layer — pgvector, chunking,
+> incremental sync, and cross-encoder reranking, with the thresholds set by measurement
+> rather than guesswork (see [ADR 0006](../adr/0006-retrieval-design.md)).

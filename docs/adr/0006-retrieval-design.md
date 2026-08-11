@@ -1,4 +1,4 @@
-# ADR 0005 — Retrieval: vectors for text, SQL for tables
+# ADR 0006 — Retrieval: vectors for text, SQL for tables
 
 **Date:** 2026-08-10
 **Status:** Accepted

@@ -1,6 +1,6 @@
 # Data & API Flows
 
-> Last updated: 2026-08-10. Traced against the code, not the design docs — where
+> Last updated: 2026-08-11. Traced against the code, not the design docs — where
 > the two disagree, this file follows the code. Line references are links.
 >
 > **Rendered version with full swimlane diagrams:**
@@ -19,8 +19,8 @@ crosses which trust boundary, where data is stored, and how each step fails.
 | 5 | [Conversation history](#5-conversation-history) | `GET /v1/conversations` |
 | 6 | [Connector status / disconnect](#6-connector-status--disconnect) | `GET /v1/connectors/status` |
 | 7 | [Upgrade to Pro](#7-upgrade-to-pro-stripe) | `/settings` |
-| 8 | [Schedule a report](#8-schedule-a-report-agent--n8n) | `action_node` |
-| 9 | [A scheduled report fires](#9-a-scheduled-report-fires-n8n--agent) | `POST /v1/webhooks/n8n` |
+| 8 | [Schedule a report](#8-schedule-a-report-agent--postgres) | `action_node` |
+| 9 | [A scheduled report fires](#9-a-scheduled-report-fires-n8n--agent) | `POST /v1/schedules/run-due` |
 | 10 | [Health & metrics](#10-health--metrics) | `/health`, `/metrics` |
 
 **Read [§11 Known gaps](#11-known-gaps) before deploying** — the production-401 problem
@@ -121,7 +121,8 @@ the others are identical in shape.
  1  ├── GET /start ──▶│               │                  │              │
  2  │                 ├─ + Bearer ───▶│                  │              │
  3  │                 │               ├─ user_id from verified JWT      │
- 4  │                 │               ├─ Redis: oauth:state:<state>, 10-min TTL
+ 4  │                 │               ├─ Redis: oauth:state:<state> = {user, connector,
+    │                 │               │          code_verifier}, 10-min TTL
  5  │◀──────────── 302 accounts.google.com ─────────────────────────────┤
  6  ├── consent screen ─────────────────────────────────────────────────▶│
  7  │◀── 302 /callback?code&state ──────────────────────────────────────┤
@@ -136,9 +137,16 @@ the others are identical in shape.
 
 1. `/start` binds the flow to the **verified** `user_id`, never a query param
    ([oauth.py:52-65](../apps/agent/app/api/oauth.py#L52-L65)).
-2. `state` is a 16-byte `secrets.token_urlsafe`, stored in Redis with a 10-minute expiry.
-   The `Flow` is **not** stored — it holds a live session and is not serialisable, and it
-   is fully determined by the redirect URI and scopes, so the callback rebuilds it.
+2. `state` is a 16-byte `secrets.token_urlsafe`, stored in Redis with a 10-minute expiry
+   **alongside the PKCE `code_verifier`**. The `Flow` object itself is not stored — it
+   holds a live session and is not serialisable — so the callback rebuilds one from
+   config and reattaches the verifier.
+
+   > `Flow.authorization_url()` generates the verifier on the instance and sends only its
+   > hash to Google; `fetch_token` must present the original. An earlier version of this
+   > file said a Flow was "fully determined by the redirect URI and scopes", which is
+   > false, and rebuilding one on that basis broke every Google connect with
+   > `invalid_grant: Missing code verifier` — *after* the user had approved consent.
 3. The callback redeems `state` with **`GETDEL`**, making read-and-delete atomic so a
    replayed callback cannot redeem the same state twice. Unknown or expired → **400**;
    Redis unreachable → **503**, never "invalid state", which would send the user round the
@@ -360,10 +368,11 @@ plain rendering of the insights.
 
 | Event | Payload | When |
 |---|---|---|
-| `stage` | `{stage, message}` | Entering planning / retrieving / analyzing / summarizing. **`compute` has no stage of its own** — it runs under `analyzing`, because it is a no-op for most questions and a new stage would need a matching case in the frontend's `StageIndicator` |
+| `stage` | `{stage, message}` | Entering planning / retrieving / analyzing / summarizing. **`compute` has no stage of its own** — it runs under `analyzing`, because it is a no-op for most questions and a fifth step would make the indicator change shape between questions. The `message` carries the difference instead: `will_compute()` decides between "Analyzing results…" and "Computing exact totals over every row…", so the caption cannot promise work that will not happen |
 | `warning` | `{connector, message}` | A connector failed, or n8n scheduling failed |
 | `chunk` | `{content}` | Each token of the answer |
 | `schedule` | `{status, workflow, cron}` | A workflow was activated |
+| `error` | `{error}` | The pipeline failed mid-stream. Keyed on `error`, not `message`: `useAgentStream` dispatches on payload *shape* and a bare `message` is how connector warnings are recognised. Quota is refunded and a `done` still follows, so the UI runs its cleanup instead of hanging on the last stage |
 | `done` | `{conversation_id}` | End of stream |
 
 ### Cost and latency profile

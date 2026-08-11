@@ -27,8 +27,9 @@
 > similarity and returns citations. It is deliberately *not* true for
 > spreadsheets: "what was Q4 revenue?" needs an exact sum over every row, so
 > tabular sources stay on the provider-search → read → `compute_node` path. What
-> is still missing is reranking, retrieval evals (recall@k), and rendering the
-> citations in the UI.
+> is still missing is retrieval evals (recall@k over a labelled set — the
+> calibration script is a smoke test, not an eval) and rendering the citations
+> in the UI.
 
 ---
 
@@ -383,7 +384,7 @@ words with the question, and silently dropped data.
 - [ ] **Chunking** — size/overlap per content type; preserve `source`, `resource_id`, and row/message offset as metadata
 - [ ] **Vector store** — `pgvector` in the existing Postgres (no new service); `document_chunks` table with an ivfflat/hnsw index, scoped by `user_id`
 - [ ] **Embeddings** — batch on ingest, not per query; store the model id so re-embedding is detectable
-- [ ] **Hybrid retrieval** — vector similarity + the existing keyword scoring, then rerank; replaces `_filter_data`
+- [~] **Hybrid retrieval** — vector similarity then cross-encoder rerank is done. Blending in the *lexical* score as a third signal is not, and may not be worth it: the reranker already reads the raw text.
 - [ ] **Citations** — every insight carries `source` + `resource_id` + offset; the UI renders them as links. Highest-credibility win for a BI tool
 - [ ] **Structured vs. text split** — decide explicitly: spreadsheets want SQL/pandas aggregation ("what was Q4 revenue?"), not nearest-neighbour lookup. Route tabular questions to computation and text questions to vector search
 - [ ] **Incremental sync** — track a per-resource revision so a query does not refetch everything (currently blocked by there being no ingest step at all)
