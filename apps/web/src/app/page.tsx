@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { AuthCta } from "@/components/AuthCta";
+
 const FEATURES = [
   {
     icon: "📊",
@@ -69,15 +71,29 @@ export default function LandingPage() {
       <nav className="border-b border-zinc-800 px-6 py-4 flex items-center justify-between max-w-6xl mx-auto">
         <span className="font-semibold text-indigo-400 text-lg tracking-wide">BI Agent</span>
         <div className="flex items-center gap-4">
-          <Link href="/sign-in" className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors">
-            Sign in
-          </Link>
-          <Link
-            href="/sign-up"
-            className="text-sm bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition-colors"
-          >
-            Get started free
-          </Link>
+          <AuthCta
+            out={
+              <>
+                <Link href="/sign-in" className="text-sm text-zinc-400 hover:text-zinc-100 transition-colors">
+                  Sign in
+                </Link>
+                <Link
+                  href="/sign-up"
+                  className="text-sm bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition-colors"
+                >
+                  Get started free
+                </Link>
+              </>
+            }
+            in={
+              <Link
+                href="/chat"
+                className="text-sm bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition-colors"
+              >
+                Go to app
+              </Link>
+            }
+          />
         </div>
       </nav>
 
@@ -96,18 +112,40 @@ export default function LandingPage() {
           no SQL, no dashboards, no data team required.
         </p>
         <div className="flex items-center justify-center gap-4">
-          <Link
-            href="/sign-up"
-            className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-xl font-medium transition-colors"
-          >
-            Start for free
-          </Link>
-          <Link
-            href="/sign-in"
-            className="border border-zinc-700 hover:border-zinc-500 text-zinc-300 px-6 py-3 rounded-xl font-medium transition-colors"
-          >
-            Sign in
-          </Link>
+          <AuthCta
+            out={
+              <>
+                <Link
+                  href="/sign-up"
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-xl font-medium transition-colors"
+                >
+                  Start for free
+                </Link>
+                <Link
+                  href="/sign-in"
+                  className="border border-zinc-700 hover:border-zinc-500 text-zinc-300 px-6 py-3 rounded-xl font-medium transition-colors"
+                >
+                  Sign in
+                </Link>
+              </>
+            }
+            in={
+              <>
+                <Link
+                  href="/chat"
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-xl font-medium transition-colors"
+                >
+                  Open BI Agent
+                </Link>
+                <Link
+                  href="/connect"
+                  className="border border-zinc-700 hover:border-zinc-500 text-zinc-300 px-6 py-3 rounded-xl font-medium transition-colors"
+                >
+                  Manage data sources
+                </Link>
+              </>
+            }
+          />
         </div>
 
         {/* Hero visual */}
@@ -186,12 +224,24 @@ export default function LandingPage() {
               <li>✓ Gmail connector</li>
               <li>✓ Notion connector</li>
             </ul>
-            <Link
-              href="/sign-up"
-              className="block text-center border border-zinc-700 hover:border-zinc-500 text-zinc-300 px-4 py-2 rounded-lg text-sm transition-colors"
-            >
-              Get started
-            </Link>
+            <AuthCta
+              out={
+                <Link
+                  href="/sign-up"
+                  className="block text-center border border-zinc-700 hover:border-zinc-500 text-zinc-300 px-4 py-2 rounded-lg text-sm transition-colors"
+                >
+                  Get started
+                </Link>
+              }
+              in={
+                <Link
+                  href="/chat"
+                  className="block text-center border border-zinc-700 hover:border-zinc-500 text-zinc-300 px-4 py-2 rounded-lg text-sm transition-colors"
+                >
+                  Go to app
+                </Link>
+              }
+            />
           </div>
           {/* Pro */}
           <div className="p-6 rounded-2xl bg-indigo-950 border border-indigo-700 relative">
@@ -208,12 +258,26 @@ export default function LandingPage() {
               <li>✓ Notion connector</li>
               <li>✓ Priority support</li>
             </ul>
-            <Link
-              href="/sign-up"
-              className="block text-center bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm transition-colors"
-            >
-              Start Pro
-            </Link>
+            <AuthCta
+              out={
+                <Link
+                  href="/sign-up"
+                  className="block text-center bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm transition-colors"
+                >
+                  Start Pro
+                </Link>
+              }
+              in={
+                // Already signed in: checkout lives on /settings, and sending
+                // them to /sign-up would bounce them straight back.
+                <Link
+                  href="/settings"
+                  className="block text-center bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm transition-colors"
+                >
+                  Upgrade to Pro
+                </Link>
+              }
+            />
           </div>
         </div>
       </section>
