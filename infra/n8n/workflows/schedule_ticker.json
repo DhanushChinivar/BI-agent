@@ -33,7 +33,7 @@
         300
       ],
       "parameters": {
-        "jsCode": "// The agent verifies an HMAC over the exact request body, so the body has\n// to be built once here and reused verbatim by the HTTP node. Building it\n// twice \u2014 once to sign, once to send \u2014 is how the signature silently stops\n// matching the moment either side reformats the JSON.\nconst body = JSON.stringify({ source: 'n8n-ticker', at: new Date().toISOString() });\nreturn [{ json: { body } }];"
+        "jsCode": "// Build the body and its HMAC together, in one place.\n//\n// n8n expressions have no HMAC helper \u2014 an earlier version of this workflow\n// used `$crypto.hmac(...)`, which silently does not exist, so the header went\n// out as an unevaluated string and the agent answered 401. Node's crypto is\n// enabled for this node via NODE_FUNCTION_ALLOW_BUILTIN=crypto in compose.\n//\n// The body is signed and sent as the *same* string, because the agent verifies\n// the HMAC over the exact request bytes.\nconst crypto = require('crypto');\n\nconst body = JSON.stringify({ source: 'n8n-ticker', at: new Date().toISOString() });\nconst signature =\n  'sha256=' + crypto.createHmac('sha256', $env.WEBHOOK_SECRET).update(body).digest('hex');\n\nreturn [{ json: { body, signature } }];"
       }
     },
     {
@@ -57,16 +57,17 @@
             },
             {
               "name": "x-hub-signature-256",
-              "value": "={{ 'sha256=' + $crypto.hmac($json.body, $env.WEBHOOK_SECRET, 'sha256', 'hex') }}"
+              "value": "={{ $json.signature }}"
             }
           ]
         },
         "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ $json.body }}",
         "options": {
           "timeout": 300000
-        }
+        },
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}"
       }
     },
     {
@@ -150,16 +151,17 @@
             },
             {
               "name": "x-hub-signature-256",
-              "value": "={{ 'sha256=' + $crypto.hmac($json.body, $env.WEBHOOK_SECRET, 'sha256', 'hex') }}"
+              "value": "={{ $json.signature }}"
             }
           ]
         },
         "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ $json.body }}",
         "options": {
           "timeout": 600000
-        }
+        },
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}"
       }
     }
   ],

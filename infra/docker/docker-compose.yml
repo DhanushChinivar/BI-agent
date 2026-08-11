@@ -118,6 +118,10 @@ services:
       REPORT_FROM_EMAIL: ${REPORT_FROM_EMAIL:-bi-agent@localhost}
       REPORT_TO_EMAIL: ${REPORT_TO_EMAIL:-}
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # The ticker signs its own request body in a Code node, because n8n
+      # expressions have no HMAC helper. Without this the `require('crypto')`
+      # there is blocked and the workflow fails at run time, not at import.
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
     volumes:
       - n8n_data:/home/node/.n8n
     restart: unless-stopped
