@@ -8,7 +8,7 @@
 # $(shell ...) Make would treat one as the start of a Makefile comment and
 # swallow the rest of the line.
 BUILD_ENV = $(shell grep -hE '^NEXT_PUBLIC_[A-Z_]+=.+' apps/web/.env.local 2>/dev/null) \
-            $(shell grep -hE '^WEBHOOK_SECRET=.+' apps/agent/.env 2>/dev/null)
+            $(shell grep -hE '^(WEBHOOK_SECRET|REPORT_(FROM|TO)_EMAIL)=.+' apps/agent/.env 2>/dev/null)
 
 COMPOSE       = $(BUILD_ENV) docker compose -f infra/docker/docker-compose.yml
 COMPOSE_INFRA = docker compose -f infra/docker/docker-compose.infra.yml
