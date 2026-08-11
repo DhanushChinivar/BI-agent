@@ -16,6 +16,13 @@ export interface Message {
 
 export function useAgentStream() {
   const [stage, setStage] = useState<Stage>(null);
+  // The agent sends a human-readable message with every `stage` event. It used
+  // to be dropped here, leaving StageIndicator to invent its own labels — two
+  // sources of truth for the same thing, and the more specific one discarded.
+  // It matters most where one stage covers several steps: `compute_node` runs
+  // inside "analyzing", so on an aggregation question that stage means
+  // "writing SQL and running it", not "analyzing".
+  const [stageMessage, setStageMessage] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string | undefined>(undefined);
@@ -33,6 +40,7 @@ export function useAgentStream() {
     setMessages((prev) => [...prev, { role: "user", content: question }]);
     setStreaming(true);
     setStage("planning");
+    setStageMessage(null);
 
     // Placeholder assistant message we'll fill in as chunks arrive
     setMessages((prev) => [...prev, { role: "assistant", content: "", warnings: [] }]);
@@ -81,6 +89,7 @@ export function useAgentStream() {
               });
             } else if (payload.stage) {
               setStage(payload.stage as Stage);
+              setStageMessage(payload.message ?? null);
             } else if (payload.status === "scheduled") {
               setMessages((prev) => {
                 const next = [...prev];
@@ -150,6 +159,7 @@ export function useAgentStream() {
       }
     } finally {
       setStage("done");
+      setStageMessage(null);
       setStreaming(false);
     }
   }, [activeConversationId]);
@@ -159,6 +169,7 @@ export function useAgentStream() {
     setActiveConversationId(conversationId);
     setMessages(history);
     setStage(null);
+    setStageMessage(null);
     setStreaming(false);
   }, []);
 
@@ -166,9 +177,19 @@ export function useAgentStream() {
     abortRef.current?.abort();
     setMessages([]);
     setStage(null);
+    setStageMessage(null);
     setStreaming(false);
     setActiveConversationId(undefined);
   }, []);
 
-  return { messages, stage, streaming, send, reset, loadConversation, activeConversationId };
+  return {
+    messages,
+    stage,
+    stageMessage,
+    streaming,
+    send,
+    reset,
+    loadConversation,
+    activeConversationId,
+  };
 }

@@ -15,6 +15,7 @@ from app.graph.nodes.compute import (
     _is_single_select,
     _tabular,
     compute_node,
+    will_compute,
 )
 
 
@@ -219,3 +220,49 @@ async def test_markdown_fenced_sql_is_unwrapped():
     with _sql("```sql\nSELECT sum(revenue) AS total FROM t0\n```"):
         result = await compute_node(_state([{"revenue": 5}, {"revenue": 7}]))
     assert result["computation"]["rows"] == [{"total": 12}]
+
+
+# ── stage labelling ───────────────────────────────────────────────────────────
+
+def _stage_state(question_type: str, entries: list[dict]) -> dict:
+    return {"question_type": question_type, "retrieved_data": entries}
+
+
+@pytest.mark.parametrize("question_type", ["aggregation", "trend", "comparison"])
+def test_will_compute_for_arithmetic_questions_over_tables(question_type):
+    state = _stage_state(question_type, [{"data": {"rows": [{"revenue": "100"}]}}])
+
+    assert will_compute(state) is True
+
+
+@pytest.mark.parametrize("question_type", ["lookup", "other", "summary"])
+def test_will_not_compute_for_non_arithmetic_questions(question_type):
+    state = _stage_state(question_type, [{"data": {"rows": [{"revenue": "100"}]}}])
+
+    assert will_compute(state) is False
+
+
+def test_will_not_compute_without_a_table():
+    """A Gmail or Notion aggregation has no rows to run SQL over, so the stage
+    caption must not promise exact totals it cannot produce."""
+    state = _stage_state("aggregation", [{"data": {"passages": ["we grew a lot"]}}])
+
+    assert will_compute(state) is False
+
+
+def test_will_compute_sees_the_untrimmed_rows():
+    """`full_data` is what compute actually reads when the sample was cut."""
+    entry = {"data": {"rows": []}, "full_data": {"rows": [{"revenue": "1"}]}}
+
+    assert will_compute(_stage_state("aggregation", [entry])) is True
+
+
+@pytest.mark.asyncio
+async def test_the_predicate_agrees_with_what_compute_node_does():
+    """The point of exporting it: a second copy of this condition would drift,
+    and the symptom would be a progress caption promising work never done."""
+    no_table = _stage_state("aggregation", [{"data": {"passages": ["text"]}}])
+
+    assert will_compute(no_table) is False
+    # compute_node reaches the same conclusion without calling the LLM.
+    assert (await compute_node(no_table))["computation"] is None

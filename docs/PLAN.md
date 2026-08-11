@@ -372,8 +372,10 @@ words with the question, and silently dropped data.
 - [x] **Index lifecycle** — dropped on disconnect, alongside the Redis cache
 
 ### Remaining
-- [ ] **Reranking** — hits are ordered by raw cosine distance with a 0.6 cut; a
-      cross-encoder rerank on the top-k would sharpen the ordering
+- [x] **Reranking** — `voyage rerank-2-lite` over the shortlist. pgvector returns
+      `k * 4` candidates by cosine distance, the cross-encoder rescores them by
+      reading the question and passage *together*, and `_MIN_RELEVANCE` cuts the
+      tail. Falls back to the vector ordering when unconfigured or unreachable
 - [ ] **Retrieval evals** — recall@k against a labelled set, separate from answer evals
 - [ ] **Citations in the UI** — the data reaches the analyst; nothing renders it as a link
 - [ ] **Original tasks not yet done**

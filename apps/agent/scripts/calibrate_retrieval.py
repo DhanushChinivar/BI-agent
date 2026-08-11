@@ -27,7 +27,7 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 from app.config.settings import get_settings  # noqa: E402
 
 get_settings.cache_clear()
-from app.rag import embeddings  # noqa: E402
+from app.rag import embeddings, rerank  # noqa: E402
 
 # Chunks shaped the way `chunking.py` actually emits them: title · sender · date
 # header, then body. Calibrating on bare sentences would flatter the numbers.
@@ -56,6 +56,12 @@ CASES = [
     ("How do I reset my VPN password?", None),
     ("What were our hiring plans for 2024?", None),
 ]
+
+
+# Voyage's free tier allows ~3 requests/minute and reranking is inherently one
+# call per question — there is no batching across queries. Pace the loop rather
+# than let it die a third of the way through with a partial picture.
+_PACE_SECONDS = 21.0
 
 
 def cosine_distance(a, b):
@@ -91,15 +97,62 @@ async def main():
         print(f"{question:<40} {dists[best]:>7.3f}  {best:>6}  {verdict}")
 
     print("-" * 78)
-    print(f"relevant pairs   : max distance {max(relevant):.3f}  (all must be kept)")
-    print(f"irrelevant pairs : min distance {min(irrelevant):.3f}  (all must be cut)")
+    print("STAGE 1 — bi-encoder cosine distance (lower is closer)")
+    print(f"  correct answers    : up to {max(relevant):.3f}   (all must be kept)")
+    print(f"  nothing answers it : from {min(irrelevant):.3f}  (all must be cut)")
     gap = min(irrelevant) - max(relevant)
-    print(f"separation gap   : {gap:+.3f}")
-    if gap > 0:
-        print(f"→ any cut in ({max(relevant):.3f}, {min(irrelevant):.3f}) separates them")
-        print(f"→ midpoint      : {(max(relevant) + min(irrelevant)) / 2:.2f}")
-    else:
-        print("→ no clean separation; a cut alone cannot do this and needs reranking")
+    print(f"  separation         : {gap:+.3f}", end="  ")
+    print("(clean)" if gap > 0 else "(OVERLAP — no cut separates them)")
+
+    if not rerank.enabled():
+        print("\nSTAGE 2 skipped — reranking not configured")
+        return
+
+    # Stage 2: score every question against every document with the
+    # cross-encoder, one batched call per question.
+    print()
+    print("STAGE 2 — cross-encoder relevance (higher is better)")
+    r_rel, r_irr = [], []
+    for n, (question, answer_idx) in enumerate(CASES):
+        if n:
+            await asyncio.sleep(_PACE_SECONDS)
+        try:
+            scored = await rerank._post(
+                {
+                    "query": question,
+                    "documents": DOCS,
+                    "model": get_settings().rerank_model,
+                    "top_k": len(DOCS),
+                }
+            )
+        except Exception as exc:
+            # Print what we have rather than losing the whole run.
+            print(f"  {question:<40}  rerank failed: {str(exc)[:60]}")
+            continue
+        by_index = {e["index"]: e["relevance_score"] for e in scored}
+        best_idx = max(by_index, key=lambda i: by_index[i])
+        best = by_index[best_idx]
+
+        if answer_idx is None:
+            r_irr.append(best)
+            verdict = "no answer exists"
+        else:
+            r_rel.append(by_index[answer_idx])
+            verdict = "correct doc" if best_idx == answer_idx else f"WRONG (got {best_idx})"
+        print(f"  {question:<40} {best:>6.3f}  {best_idx:>3}  {verdict}")
+
+    print("-" * 78)
+    if not r_rel or not r_irr:
+        print("  not enough successful calls to summarise")
+        return
+    print(f"  correct answers    : down to {min(r_rel):.3f}  (all must be kept)")
+    print(f"  nothing answers it : up to  {max(r_irr):.3f}  (all must be cut)")
+    r_gap = min(r_rel) - max(r_irr)
+    print(f"  separation         : {r_gap:+.3f}", end="  ")
+    print("(clean)" if r_gap > 0 else "(OVERLAP)")
+    if r_gap > 0:
+        print(f"  → any cut in ({max(r_irr):.3f}, {min(r_rel):.3f}) separates them")
+        print(f"  → configured _MIN_RELEVANCE = {rerank._MIN_RELEVANCE}")
 
 
 asyncio.run(main())

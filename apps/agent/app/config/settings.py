@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # retriever falls back to the provider-search path — degraded, not broken.
     voyage_api_key: str = Field(default="")
     embedding_model: str = Field(default="voyage-3-lite")
+    # Cross-encoder applied to the vector index's shortlist. Empty disables it
+    # and retrieval falls back to plain cosine ordering.
+    rerank_model: str = Field(default="rerank-2-lite")
 
     # Database
     database_url: str = Field(default="postgresql+asyncpg://localhost/biagent")

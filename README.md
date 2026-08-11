@@ -23,8 +23,11 @@ retriever consumes them as an MCP client. OAuth remains the authorization layer 
 supplies per-user tokens — MCP is the transport/tool-discovery layer on top.
 
 **Two retrieval paths, chosen by source type.** Gmail threads and Notion pages are
-chunked, embedded with `voyage-3-lite`, and stored in pgvector; questions about them are
-answered by vector similarity and come back with citations. Spreadsheets are deliberately
+chunked, embedded with `voyage-3-lite`, and stored in pgvector. A question shortlists
+candidates by cosine distance, then a **cross-encoder reranks them** — measurement showed
+distance alone cannot tell a genuine match from a topically adjacent miss, so the
+reranker is what lets the agent say "nothing in your data answers this". Answers come
+back with citations. Spreadsheets are deliberately
 *not* embedded — "what was Q4 revenue?" needs an exact sum over every row, and
 nearest-neighbour lookup over embedded rows answers a different question convincingly.
 
@@ -41,7 +44,7 @@ the analyst can fit in a prompt. Other question types skip the node entirely.
 | Backend | FastAPI, LangGraph, Anthropic Claude |
 | Connectors | MCP (FastMCP server + client) over streamable-http |
 | Compute | DuckDB (in-memory, external access disabled) for exact aggregates |
-| Retrieval | Voyage `voyage-3-lite` embeddings + pgvector (HNSW, cosine) for Gmail/Notion |
+| Retrieval | Voyage `voyage-3-lite` embeddings + pgvector (HNSW, cosine), reranked with `rerank-2-lite` |
 | Database | PostgreSQL 16 + pgvector (credentials, plans, history, schedules, chunks) |
 | Cache | Redis 7 (connector data, 5-min TTL) |
 | Automation | n8n (scheduled reports, data alerts) |
@@ -182,5 +185,5 @@ uv run pytest tests/evals/ -v --timeout=120
 
 Phases 1–10 are complete (pipeline, connectors, OAuth, dashboard, auth, billing,
 n8n automation, Docker, MCP migration, security hardening, RAG retrieval for text
-sources). Remaining: reranking, retrieval evals (recall@k), rendering citations in the
-UI, CI, and deployment. See [`docs/PLAN.md`](docs/PLAN.md) for the breakdown.
+sources). Remaining: retrieval evals (recall@k), rendering citations in the UI, CI, and
+deployment. See [`docs/PLAN.md`](docs/PLAN.md) for the breakdown.

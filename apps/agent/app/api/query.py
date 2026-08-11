@@ -21,7 +21,7 @@ from app.db.history_crud import (
 from app.graph.builder import graph
 from app.graph.nodes.action import action_node
 from app.graph.nodes.analyst import analyst_node
-from app.graph.nodes.compute import compute_node
+from app.graph.nodes.compute import compute_node, will_compute
 from app.graph.nodes.planner import planner_node
 from app.graph.nodes.retriever import retriever_node
 from app.graph.nodes.summarizer import _SYSTEM as SUMMARIZER_SYSTEM
@@ -177,10 +177,24 @@ async def _stream_pipeline(user_id: str, req: QueryRequest) -> AsyncIterator[dic
     for item in failed:
         yield _sse("warning", {"connector": item["source"], "message": item["error"]})
 
-    yield _sse("stage", {"stage": "analyzing", "message": "Analyzing results…"})
     # compute runs under the "analyzing" stage rather than emitting one of its
-    # own: it is a no-op for most questions, and a new stage would need a
-    # matching case in the frontend's StageIndicator.
+    # own: it is a no-op for most questions, and a new stage would make the
+    # indicator change shape between questions. The *message* carries the
+    # difference instead — on an aggregation this stage means "write SQL and
+    # run it over every row", which is slower and materially different from
+    # analysis, and the caption should say so rather than leave the user
+    # watching a word that has stopped being true.
+    yield _sse(
+        "stage",
+        {
+            "stage": "analyzing",
+            "message": (
+                "Computing exact totals over every row…"
+                if will_compute(state)
+                else "Analyzing results…"
+            ),
+        },
+    )
     state.update(await compute_node(state))
     state.update(await analyst_node(state))
 

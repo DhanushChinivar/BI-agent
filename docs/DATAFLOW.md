@@ -260,8 +260,15 @@ spreadsheet rows answers a different question while looking authoritative.
    is embedded with `input_type="query"` (Voyage's models are asymmetric — using
    `document` for both measurably degrades recall), and the nearest chunks are fetched
    with pgvector's `<=>` operator, filtered to `user_id`, and cut at cosine distance
-   `0.6`. Without that cut an ANN index has no concept of "nothing relevant here" and
-   returns the twelve least-irrelevant chunks in the account.
+   `0.75`. That shortlist (`k × 4`) is then **reranked by a cross-encoder**
+   (`voyage rerank-2-lite`), which reads the question and each passage together
+   rather than comparing two independently-built vectors. Measurement showed the
+   distance populations for answered and unanswered questions *overlap*, so the
+   cut alone cannot decide when the index has nothing — the reranker's calibrated
+   score can. A rerank failure keeps the vector ordering rather than failing the
+   question. Both cuts exist because an ANN index has no concept of "nothing
+   relevant here" — asked for twelve neighbours it returns the twelve
+   least-irrelevant chunks in the account, however unrelated.
    `group_by_resource` collapses chunk hits into one entry per document, each carrying a
    `citation` of `{connector, resource_id, title}`. A connector answered from the index is
    removed from the live-fetch list — a warm index makes the connector round trip pure cost.
@@ -543,7 +550,7 @@ rather than 400.
 
 | Gap | Where | Impact |
 |---|---|---|
-| Hits are ordered by raw cosine distance with a `0.6` cut; there is no reranking | [search.py](../apps/agent/app/rag/search.py) | A cross-encoder rerank over the top-k would sharpen the ordering |
+| The reranker is a hosted API call on the query path | [rerank.py](../apps/agent/app/rag/rerank.py) | Adds a round trip to every question over text sources, and Voyage's free tier is ~3 requests/minute. Falls back to the vector ordering rather than failing |
 | No retrieval evals | — | Recall@k against a labelled set, separate from the answer evals |
 | Citations reach the analyst but nothing renders them | [MessageBubble.tsx](../apps/web/src/components/MessageBubble.tsx) | Every vector entry carries `{connector, resource_id, title}`; the UI shows prose only |
 | `list_resources` on Gmail is N+1 | [gmail.py](../apps/agent/app/connectors/gmail.py) | The list response carries no subject, so each thread costs its own `threads().get()`. Capped at 8 to bound the latency rather than batched |

@@ -57,6 +57,31 @@ Ranking itself measured well: 7 of 7 questions with an answer retrieved the righ
 - Chunk boundaries move when a document changes, so resync is delete-then-insert per resource rather than a diff. A briefly missing resource beats a half-updated one.
 - Answers over text now carry `{connector, resource_id, title}`. **Nothing renders them yet** — the data reaches the analyst, the UI shows prose.
 
+## Amendment — reranking (2026-08-11)
+
+The overlap above is not a tuning problem, and no amount of moving the threshold fixes it. A bi-encoder embeds the question and the passage **independently** and compares the two vectors; it never sees them together. So "What were our hiring plans for 2024?" lands near a revenue email because both are corporate-finance-shaped, and that similarity is real — it is just not *relevance*.
+
+A cross-encoder reads `(question, passage)` as a single input and scores their actual relationship. It costs far more per pair, which is exactly why it runs second: pgvector culls the whole index down to `k × 4` candidates cheaply, and the expensive model only judges those.
+
+Re-running the same ten questions through both stages:
+
+| | correct answers | nothing answers it | separation |
+|---|---|---|---|
+| Bi-encoder (cosine distance) | up to 0.629 | from 0.554 | **−0.076 — overlap** |
+| Cross-encoder (relevance) | down to 0.535 | up to 0.500 | **+0.035 — clean** |
+
+The second stage makes "nothing in your data answers this" a decision the system can actually make. Both stages ranked 7/7 correctly, so the reranker's contribution here is the *threshold*, not the ordering — with a larger and messier corpus the ordering would matter more too.
+
+**`_MIN_RELEVANCE` is 0.48, below the separating band rather than inside it.** The band is only 0.035 wide and comes from ten questions I wrote myself; that is enough evidence to place a floor and not enough to trust a midpoint. The errors are also asymmetric, the same way they were for the distance cut: a weak passage that reaches the analyst gets dismissed in the answer, while a true answer cut here is gone and the agent says it has no data. At 0.48 the two clearest non-answers are dropped, every true answer survives with 0.055 to spare, and one borderline case gets through by choice.
+
+The value shipped at 0.35 first. Every non-answer scored above it — a filter that looked like one and filtered nothing. It was measurement, not review, that caught that.
+
+### Consequences
+
+- One more API round trip per question over text sources. Voyage's free tier allows ~3 requests/minute, and a question already spends one call on the query embedding.
+- `rerank()` never raises. Unconfigured or unreachable, it returns the vector ordering — which is precisely what retrieval did before this existed.
+- `RERANK_MODEL=` disables it entirely.
+
 ## Not done
 
-Reranking (hits are ordered by raw cosine distance), retrieval evals (recall@k against a labelled set), and citation rendering in the UI.
+Retrieval evals (recall@k against a labelled set — `scripts/calibrate_retrieval.py` is the seed, but ten hand-written questions over four documents is a smoke test, not an eval) and citation rendering in the UI.

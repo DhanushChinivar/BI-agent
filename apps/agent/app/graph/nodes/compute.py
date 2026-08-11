@@ -118,6 +118,19 @@ def _connect(tables: dict[str, pd.DataFrame]):
     return con
 
 
+def will_compute(state: AgentState) -> bool:
+    """Whether `compute_node` will do real work for this state.
+
+    Exported so the SSE layer can label the stage honestly without restating
+    the condition. A second copy of this predicate would drift the first time
+    either side changed, and the symptom would be a progress caption promising
+    work that never happens.
+    """
+    if state.get("question_type", "other") not in _COMPUTED_TYPES:
+        return False
+    return any(_tabular(entry) is not None for entry in state.get("retrieved_data", []))
+
+
 async def compute_node(state: AgentState) -> dict:
     t0 = time.monotonic()
     bound = log.bind(

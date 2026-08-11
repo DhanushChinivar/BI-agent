@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from app.config.settings import get_settings
-from app.rag import TEXT_CONNECTORS, chunking, embeddings, search
+from app.rag import TEXT_CONNECTORS, chunking, embeddings, rerank, search
 
 # ── chunking ──────────────────────────────────────────────────────────────────
 
@@ -432,3 +432,167 @@ def test_a_huge_retry_after_is_capped():
     exc = httpx.HTTPStatusError("429", request=resp.request, response=resp)
 
     assert embeddings._retry_delay(exc, 0) == embeddings._MAX_BACKOFF
+
+
+# ── reranking ─────────────────────────────────────────────────────────────────
+
+def _candidate(idx: int, text: str, distance: float = 0.5) -> dict:
+    return {
+        "connector": "gmail",
+        "resource_id": f"t{idx}",
+        "resource_title": f"Thread {idx}",
+        "chunk_index": 0,
+        "content": text,
+        "distance": distance,
+        "score": round(1.0 - distance / 2.0, 4),
+    }
+
+
+def _rerank_response(pairs):
+    """pairs: [(index, relevance_score)] — Voyage returns these best-first."""
+    return {"data": [{"index": i, "relevance_score": s} for i, s in pairs]}
+
+
+@pytest.mark.asyncio
+async def test_rerank_reorders_by_cross_encoder_relevance(voyage):
+    """The whole point: the bi-encoder's ordering is a shortlist, not a verdict."""
+    candidates = [_candidate(0, "unrelated"), _candidate(1, "the actual answer")]
+
+    # Both above `_MIN_RELEVANCE`: this test is about ordering, and picking a
+    # score that the floor happens to cut would make it pass for the wrong reason.
+    async def post(self, url, json=None, **kw):
+        return _resp(200, _rerank_response([(1, 0.94), (0, 0.61)]))
+
+    with patch.object(httpx.AsyncClient, "post", post):
+        out = await rerank.rerank("q", candidates, top_n=2)
+
+    # The bi-encoder handed these over in the opposite order.
+    assert [c["resource_id"] for c in out] == ["t1", "t0"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_drops_candidates_below_the_relevance_floor(voyage):
+    """Unlike cosine distance, `relevance_score` is calibrated, so a threshold
+    here can mean "nothing in the index answers this" — which is exactly the
+    call the distance cut was measured to be incapable of making."""
+    candidates = [_candidate(0, "a"), _candidate(1, "b")]
+
+    async def post(self, url, json=None, **kw):
+        return _resp(200, _rerank_response([(0, 0.88), (1, 0.02)]))
+
+    with patch.object(httpx.AsyncClient, "post", post):
+        out = await rerank.rerank("q", candidates, top_n=2)
+
+    assert [c["resource_id"] for c in out] == ["t0"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_replaces_score_but_keeps_the_distance(voyage):
+    """Both numbers survive so a surprising result is diagnosable."""
+    async def post(self, url, json=None, **kw):
+        return _resp(200, _rerank_response([(0, 0.77)]))
+
+    with patch.object(httpx.AsyncClient, "post", post):
+        out = await rerank.rerank("q", [_candidate(0, "a", distance=0.31)], top_n=1)
+
+    assert out[0]["score"] == 0.77
+    assert out[0]["relevance"] == 0.77
+    assert out[0]["distance"] == 0.31
+
+
+@pytest.mark.asyncio
+async def test_rerank_falls_back_to_vector_order_when_voyage_is_down(voyage, monkeypatch):
+    """A degraded ordering beats losing the answer — and the fallback is exactly
+    what this returned before reranking existed."""
+    monkeypatch.setattr(rerank.asyncio, "sleep", AsyncMock())
+    candidates = [_candidate(0, "a"), _candidate(1, "b")]
+
+    async def post(self, url, json=None, **kw):
+        return _resp(503, {"detail": "down"})
+
+    with patch.object(httpx.AsyncClient, "post", post):
+        out = await rerank.rerank("q", candidates, top_n=2)
+
+    assert [c["resource_id"] for c in out] == ["t0", "t1"]
+
+
+@pytest.mark.asyncio
+async def test_rerank_is_a_no_op_when_unconfigured(monkeypatch):
+    monkeypatch.setenv("VOYAGE_API_KEY", "")
+    get_settings.cache_clear()
+    try:
+        candidates = [_candidate(0, "a")]
+        assert await rerank.rerank("q", candidates, top_n=1) == candidates
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_rerank_ignores_an_out_of_range_index(voyage):
+    """A malformed index would otherwise raise, or worse, attach the score to
+    the wrong passage."""
+    async def post(self, url, json=None, **kw):
+        return _resp(200, _rerank_response([(99, 0.9), (0, 0.8)]))
+
+    with patch.object(httpx.AsyncClient, "post", post):
+        out = await rerank.rerank("q", [_candidate(0, "a")], top_n=2)
+
+    assert [c["resource_id"] for c in out] == ["t0"]
+
+
+@pytest.mark.asyncio
+async def test_search_shortlists_wider_than_it_returns(voyage, monkeypatch):
+    """The cross-encoder can only promote what the bi-encoder handed it, so
+    recall at this stage bounds everything downstream."""
+    captured = {}
+
+    class _Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+        async def execute(self, stmt):
+            captured["limit"] = stmt._limit
+            return SimpleNamespace(all=lambda: [])
+
+    monkeypatch.setattr(search, "get_session_factory", lambda: (lambda: _Session()))
+    monkeypatch.setattr(search, "embed_query", AsyncMock(return_value=[0.1] * 512))
+
+    await search.search("u1", "q", k=12)
+
+    assert captured["limit"] == 48  # 12 * _CANDIDATE_MULTIPLIER
+
+
+@pytest.mark.parametrize(
+    "relevance,kept",
+    [
+        # Measured floor for a correct answer, and the margin below it.
+        (0.535, True),
+        (0.48, True),
+        # Measured ceiling for a question nothing answers.
+        (0.473, False),
+        (0.422, False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_relevance_floor_sits_where_measurement_put_it(voyage, relevance, kept):
+    """Pins the constant to `scripts/calibrate_retrieval.py`'s numbers.
+
+    The first value shipped was 0.35, which every non-answer scored above — a
+    threshold that filtered nothing while looking like it did.
+    """
+    async def post(self, url, json=None, **kw):
+        return _resp(200, _rerank_response([(0, relevance)]))
+
+    with patch.object(httpx.AsyncClient, "post", post):
+        out = await rerank.rerank("q", [_candidate(0, "a")], top_n=1)
+
+    assert bool(out) is kept
+
+
+def test_the_floor_lies_below_the_measured_separating_band():
+    """Deliberately not the midpoint: the band is 0.035 wide off ten questions,
+    and losing a true answer costs more than admitting a weak passage."""
+    assert 0.35 < rerank._MIN_RELEVANCE < 0.500

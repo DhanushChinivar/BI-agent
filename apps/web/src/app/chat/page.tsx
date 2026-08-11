@@ -14,7 +14,8 @@ interface ConversationSummary {
 }
 
 export default function Home() {
-  const { messages, stage, streaming, send, reset, loadConversation, activeConversationId } = useAgentStream();
+  const { messages, stage, stageMessage, streaming, send, reset, loadConversation, activeConversationId } =
+    useAgentStream();
   const bottomRef = useRef<HTMLDivElement>(null);
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -193,7 +194,7 @@ export default function Home() {
 
         {streaming && (
           <div className="max-w-3xl mx-auto w-full px-4">
-            <StageIndicator stage={stage} />
+            <StageIndicator stage={stage} message={stageMessage} />
           </div>
         )}
 

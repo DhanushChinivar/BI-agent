@@ -6,10 +6,18 @@ from sqlalchemy import select
 from app.db.engine import get_session_factory
 from app.db.models import DocumentChunk
 from app.rag.embeddings import EmbeddingsUnavailableError, embed_query, enabled
+from app.rag.rerank import rerank
 
 logger = logging.getLogger(__name__)
 
 _TOP_K = 12
+
+# How many chunks the vector index shortlists before reranking. Wider than the
+# final k on purpose: the cross-encoder can only promote what the bi-encoder
+# handed it, so recall here bounds the quality of everything downstream. The
+# extra rows cost one database read, not one API call each.
+_CANDIDATE_MULTIPLIER = 4
+_MAX_CANDIDATES = 60
 
 # Cosine distance: 0 is identical, 2 is opposite. This is a floor against absurd
 # matches, *not* a relevance filter — measured against real voyage-3-lite vectors
@@ -22,14 +30,21 @@ _TOP_K = 12
 # cut is placed to keep all of the former. The asymmetry justifies it: a passage
 # that reaches the analyst but does not answer the question costs some tokens and
 # the analyst says so, while a true answer cut here is simply lost and the agent
-# confidently reports it has no data. Tightening this is reranking's job.
+# confidently reports it has no data. Making the finer call is `rerank`'s job.
 _MAX_DISTANCE = 0.75
 
 
 async def search(
     user_id: str, question: str, connectors: list[str] | None = None, k: int = _TOP_K
 ) -> list[dict]:
-    """Chunks nearest to `question`, scoped to one user.
+    """The passages most relevant to `question`, scoped to one user.
+
+    Two stages. pgvector shortlists cheaply by cosine distance over the whole
+    index, then a cross-encoder reranks that shortlist by actually reading the
+    question and each passage together. The second stage is what makes
+    "nothing here answers this" a decision the system can make — measurement
+    showed distance alone cannot separate a genuine match from a topically
+    adjacent miss.
 
     Returns [] rather than raising when embeddings are unconfigured or Voyage is
     unreachable, so the retriever falls back to provider search instead of
@@ -59,7 +74,7 @@ async def search(
         # missing predicate here would serve another tenant's email as context.
         .where(DocumentChunk.user_id == user_id)
         .order_by(distance)
-        .limit(k)
+        .limit(min(k * _CANDIDATE_MULTIPLIER, _MAX_CANDIDATES))
     )
     if connectors:
         stmt = stmt.where(DocumentChunk.connector.in_(connectors))
@@ -68,7 +83,7 @@ async def search(
     async with factory() as session:
         rows = (await session.execute(stmt)).all()
 
-    return [
+    candidates = [
         {
             "connector": r.connector,
             "resource_id": r.resource_id,
@@ -78,11 +93,16 @@ async def search(
             "distance": float(r.distance),
             # 0 distance → 1.0. Reported alongside the raw distance because
             # "score" is what a reader expects and distance sorts backwards.
+            # `rerank` overwrites this with its own calibrated relevance.
             "score": round(1.0 - float(r.distance) / 2.0, 4),
         }
         for r in rows
         if float(r.distance) <= _MAX_DISTANCE
     ]
+
+    # Never raises: a rerank outage returns the vector ordering, which is what
+    # this function did before the second stage existed.
+    return await rerank(question, candidates, k)
 
 
 def group_by_resource(hits: list[dict]) -> list[dict]:
