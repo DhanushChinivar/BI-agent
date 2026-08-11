@@ -1,4 +1,5 @@
 {
+  "id": "biAgentTicker01",
   "name": "schedule_ticker",
   "active": false,
   "nodes": [
