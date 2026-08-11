@@ -102,9 +102,9 @@ services:
     ports:
       - "5678:5678"
     environment:
-      N8N_BASIC_AUTH_ACTIVE: "true"
-      N8N_BASIC_AUTH_USER: admin
-      N8N_BASIC_AUTH_PASSWORD: admin
+      # N8N_BASIC_AUTH_* is deliberately absent: it was removed during n8n 1.x
+      # and this image is 2.x, so setting it does nothing except imply a login
+      # that does not work. n8n prompts for an owner account on first visit.
       N8N_HOST: localhost
       N8N_PORT: 5678
       WEBHOOK_URL: http://localhost:5678

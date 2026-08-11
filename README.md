@@ -73,7 +73,7 @@ Open **http://localhost:3000** in your browser.
 |---|---|
 | Web app | http://localhost:3000 |
 | Agent API docs | http://localhost:8000/docs |
-| n8n | http://localhost:5678 (admin / admin) |
+| n8n | http://localhost:5678 — creates an owner account on first visit |
 | Prometheus metrics | http://localhost:8000/metrics |
 
 ## Other make commands

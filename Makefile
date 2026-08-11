@@ -23,7 +23,7 @@ infra: ## Start postgres, redis, n8n in Docker (needed for local dev)
 	@echo "Infrastructure running:"
 	@echo "  Postgres → localhost:5432"
 	@echo "  Redis    → localhost:6379"
-	@echo "  n8n      → http://localhost:5678  (admin / admin)"
+	@echo "  n8n      → http://localhost:5678  (owner account, set on first visit)"
 	@echo ""
 	@echo "Now run in separate terminals:"
 	@echo "  make mcp-server"
@@ -50,7 +50,7 @@ dev: ## Build images and start full Docker stack
 	@echo "Stack is running:"
 	@echo "  Web   → http://localhost:3000"
 	@echo "  Agent → http://localhost:8000/docs"
-	@echo "  n8n   → http://localhost:5678  (admin / admin)"
+	@echo "  n8n   → http://localhost:5678  (owner account, set on first visit)"
 
 down: ## Stop and remove all containers
 	$(COMPOSE) down
