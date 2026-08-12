@@ -128,6 +128,12 @@
         "subject": "=BI Agent report \u2014 {{ $json.question }}",
         "text": "={{ $json.answer }}",
         "options": {}
+      },
+      "credentials": {
+        "smtp": {
+          "id": "VtDk3aTNObEipDr9",
+          "name": "SMTP account"
+        }
       }
     },
     {
