@@ -53,21 +53,45 @@ the analyst can fit in a prompt. Other question types skip the node entirely.
 
 ## Quick start
 
-**Prerequisites:** Docker Desktop, an Anthropic API key.
+**Prerequisites:** Docker Desktop, an [Anthropic API key](https://console.anthropic.com),
+and a [Clerk](https://clerk.com) application (free tier is fine). Everything else is
+optional and the app degrades without it.
+
+### 1. Clone and create both env files
+
+Two are needed — a missing `apps/web/.env.local` fails the build, not just a feature.
 
 ```bash
 git clone https://github.com/DhanushChinivar/BI-agent.git
 cd BI-agent
 
-# Fill in your API key
 cp apps/agent/.env.example apps/agent/.env
-# Edit apps/agent/.env — set ANTHROPIC_API_KEY
+cp apps/web/.env.example   apps/web/.env.local
+```
 
-# Start everything
+### 2. Fill in the two required keys
+
+| File | Variable | Where to get it |
+|---|---|---|
+| `apps/agent/.env` | `ANTHROPIC_API_KEY` | console.anthropic.com |
+| `apps/web/.env.local` | `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` | Clerk dashboard → API Keys |
+| `apps/web/.env.local` | `CLERK_SECRET_KEY` | same page |
+
+> `NEXT_PUBLIC_*` is inlined into the browser bundle by `next build`, so it must be
+> present *before* the image is built. `make dev` reads `apps/web/.env.local` and passes
+> them as build args; the build fails with a named error rather than producing an image
+> whose UI silently hangs.
+
+### 3. Start it
+
+```bash
 make dev
 ```
 
-Open **http://localhost:3000** in your browser.
+Migrations run automatically as the agent boots (`alembic upgrade head`), so there is no
+separate step. First run pulls images and builds — allow a few minutes.
+
+Open **http://localhost:3000**, sign up, and you are in.
 
 | Service | URL |
 |---|---|
@@ -125,24 +149,50 @@ workflow re-syncs every 5 minutes, skipping resources whose revision has not cha
 Check progress with `GET /v1/index/status`, or force a pass with `POST /v1/index/sync`.
 
 ### Scheduled reports
+
 Schedules live in Postgres (`scheduled_reports`), not in n8n. n8n runs exactly one
 workflow — `schedule_ticker` — which every 5 minutes calls `POST /v1/schedules/run-due`,
 signed with `WEBHOOK_SECRET`; the agent claims whatever is due, runs it, and returns the
 answers for n8n to email.
 
-After `make dev`, import and activate it:
+Setting it up is four steps, and each one fails silently if skipped — the workflow stays
+green on every tick that has nothing to send, so a broken step only shows up the first
+time a report is actually due.
+
+**1.** Add the delivery addresses to `apps/agent/.env` (the Makefile exports them into
+the n8n container; that file is gitignored, so a personal address stays out of the repo):
+
 ```bash
-N8N_API_KEY=<your-key> make import-workflows
+REPORT_FROM_EMAIL=you@example.com
+REPORT_TO_EMAIL=you@example.com
 ```
 
-`WEBHOOK_SECRET` must be exported in the shell you run `make dev` from — the n8n container
-reads it to sign its calls, and the agent 401s if the two disagree:
+**2.** Open http://localhost:5678, create the owner account, then **Credentials → New →
+SMTP** and fill in your mail server. For Gmail use an
+[app password](https://myaccount.google.com/apppasswords), not your account password.
+
+**3.** Import and activate the workflow:
+
 ```bash
-export WEBHOOK_SECRET=$(grep '^WEBHOOK_SECRET=' apps/agent/.env | cut -d= -f2)
+N8N_API_KEY=<key from n8n Settings → API> make import-workflows
 ```
 
-Ask the agent *"email me this every Monday"* and it writes a schedule, or manage them
-directly via `GET/POST /v1/schedules` and `DELETE /v1/schedules/{id}`.
+**4.** In the n8n editor, open `schedule_ticker` → the **Send Report Email** node → set
+its credential to the SMTP account you just made. Credentials are specific to an n8n
+instance and are never carried in the workflow file, so this link cannot be imported.
+
+Then ask the agent *"email me this every Monday"*, or manage schedules directly via
+`GET/POST /v1/schedules` and `DELETE /v1/schedules/{id}`.
+
+To check it worked, make a schedule due and watch it run:
+
+```bash
+docker compose -f infra/docker/docker-compose.yml exec -T postgres \
+  psql -U biagent -d biagent -c \
+  "update scheduled_reports set next_run_at = now() - interval '1 minute';"
+```
+
+Within five minutes `last_status` should read `ok` and `next_run_at` should have advanced.
 
 ## Production configuration
 
